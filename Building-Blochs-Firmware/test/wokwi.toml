@@ -1,0 +1,17 @@
+[wokwi]
+version = 1
+firmware = '../.pio/build/wokwi_sim/firmware.bin'
+elf     = '../.pio/build/wokwi_sim/firmware.elf'
+
+# ---------------------------------------------------------------------------
+# Scenario tests — run with: wokwi-cli test  (from project root)
+# Each [[test]] block maps a name to a scenario YAML file.
+# ---------------------------------------------------------------------------
+
+[[test]]
+name     = "Boot sequence"
+scenario = "scenario_boot.yaml"
+
+[[test]]
+name     = "State machine: RESET → IDLE"
+scenario = "scenario_state_machine.yaml"

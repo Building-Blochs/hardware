@@ -1,0 +1,28 @@
+Collected 1 tests (test_native)
+
+Processing test_native in native_test environment
+--------------------------------------------------------------------------------
+Building...
+LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
+LDF Modes: Finder ~ chain, Compatibility ~ soft
+Found 1 compatible libraries
+Scanning dependencies...
+Dependency Graph
+|-- Unity @ 2.6.1 (License: MIT, Path: C:\Users\pasca\Desktop\Building-Blochs\Building-Blochs-Firmware\.pio\libdeps\native_test\Unity)
+Building in debug, test mode
+gcc -o .pio\build\native_test\unity_config_build\unity_config.o -c -Wall -Og -g2 -ggdb2 -DPLATFORMIO=60119 -D__PLATFORMIO_BUILD_DEBUG__ -DPIO_UNIT_TESTING -DUNIT_TEST -DUNITY_INCLUDE_CONFIG_H -DUNITY_INCLUDE_CONFIG_H -I.pio\libdeps\native_test\Unity\src -I.pio\build\native_test\unity_config -I.pio\build\native_test\unity_config -Itest\test_native -Itest -Isrc -Iinclude -Itest\mock .pio\build\native_test\unity_config\unity_config.c
+g++ -o .pio\build\native_test\test\test_native\test_main.o -c -std=c++14 -Wall -Og -g2 -ggdb2 -DPLATFORMIO=60119 -D__PLATFORMIO_BUILD_DEBUG__ -DPIO_UNIT_TESTING -DUNIT_TEST -DUNITY_INCLUDE_CONFIG_H -DUNITY_INCLUDE_CONFIG_H -I.pio\libdeps\native_test\Unity\src -I.pio\build\native_test\unity_config -I.pio\build\native_test\unity_config -Itest\test_native -Itest -Isrc -Iinclude -Itest\mock test\test_native\test_main.cpp
+gcc -o .pio\build\native_test\liba78\Unity\unity.o -c -Wall -Og -g2 -ggdb2 -DPLATFORMIO=60119 -D__PLATFORMIO_BUILD_DEBUG__ -DPIO_UNIT_TESTING -DUNITY_INCLUDE_CONFIG_H -I.pio\libdeps\native_test\Unity\src -I.pio\build\native_test\unity_config -Isrc -Iinclude -Itest\mock .pio\libdeps\native_test\Unity\src\unity.c
+*** [.pio\build\native_test\unity_config_build\unity_config.o] Error 1
+*** [.pio\build\native_test\test\test_native\test_main.o] Error 1
+*** [.pio\build\native_test\liba78\Unity\unity.o] Error 1
+Building stage has failed, see errors above. Use `pio test -vvv` option to enable verbose output.
+------------- native_test:test_native [ERRORED] Took 1.60 seconds -------------
+
+=================================== SUMMARY ===================================
+Environment     Test         Status    Duration
+--------------  -----------  --------  ------------
+m5stack-cores3  test_native  SKIPPED
+wokwi_sim       test_native  SKIPPED
+native_test     test_native  ERRORED   00:00:01.600
+================== 1 test cases: 0 succeeded in 00:00:01.600 ==================

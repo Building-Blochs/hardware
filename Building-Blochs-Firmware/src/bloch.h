@@ -9,62 +9,65 @@
 
 using namespace Eigen;
 
-#define AXIS_X {1, 0, 0}
-#define AXIS_Y {0, 1, 0}
-#define AXIS_Z {0, 0, 1}
-// #define VECTOR_H              {0.707106, 0, 0.707106} // sqrt(2)/2
-
-typedef std::queue<Vector3d> MovementQueue_t;
-
 class BlochSphere
 {
 public:
-	BlochSphere();
-	~BlochSphere();
+    // Quantum gate identifiers — used by the GUI and receiver to request rotations.
+    typedef enum
+    {
+        PERMUTE_X = 1,
+        PERMUTE_Y,
+        PERMUTE_Z,
+        PERMUTE_H,
+        PERMUTE_S,
+        PERMUTE_NS, // S†
+        PERMUTE_T,
+        PERMUTE_NT, // T†
+    } permute_t;
 
-	bool begin();
-	void loop();
-	void reset();
-	
-	bool isBusy() const; 
+    BlochSphere();
+    ~BlochSphere();
 
-	// FIXME: rotate(axis, degrees) pls
-	bool rotate(const Vector3d axis, const int steps);
-	Vector3d getState() const;
+    bool begin();
+    void loop();
+    void reset();
 
-	typedef enum
-	{
-		PERMUTE_X = 1,
-		PERMUTE_Y,
-		PERMUTE_Z,
-		PERMUTE_H,
-		PERMUTE_S,
-		PERMUTE_NS,
-		PERMUTE_T,
-		PERMUTE_NT,
-	} permute_t;
-	bool permute(const permute_t permute);
+    bool isBusy() const;
+
+    // Enqueue a rotation: axis (need not be unit), steps (signed, full rotation = STEPS_PER_ROTATION).
+    bool rotate(const Vector3d axis, const int steps);
+
+    // Returns the software-tracked Bloch vector (unit sphere, starts at |0⟩ = (0,0,1)).
+    Vector3d getState() const;
 
 private:
-	typedef enum
-	{
-		_NONE, // Needed for prv_state detection
-		RESET, // _state init value
-		IDLE,
-		MOVE_START,
-		MOVE_BUSY,
-		MOVE_END,
-	} state_t;
-	const char *StateNames[MOVE_END + 1] = {"<none>", "RESET", "IDLE", "START", "BUSY", "END"};
-	state_t _state = RESET;
-	MovementQueue_t _queue;
+    typedef enum
+    {
+        _NONE,      // sentinel for first-run state-change detection
+        RESET,      // initial state, also re-entered on reset()
+        IDLE,
+        MOVE_START,
+        MOVE_BUSY,
+        MOVE_END,
+    } state_t;
 
-	Module_Stepmotor _driver;
-	AccelStepper _motor1;
-	AccelStepper _motor2;
-	AccelStepper _motor3;
-	Matrix3d _motormatrix;
-	Vector3d _bloch_state;
+    const char *StateNames[MOVE_END + 1] = {"<none>", "RESET", "IDLE", "START", "BUSY", "END"};
+
+    state_t _state = RESET;
+
+    typedef std::queue<Vector3d> MovementQueue_t;
+    MovementQueue_t _queue;
+
+    Module_Stepmotor _driver;
+    AccelStepper _motor1;
+    AccelStepper _motor2;
+    AccelStepper _motor3;
+
+    // Maps a rotation axis in Bloch-sphere coordinates to motor step counts.
+    Matrix3d _motormatrix;
+
+    // Software copy of the Bloch vector, updated on every rotate() call.
+    Vector3d _bloch_state;
 };
 
 #endif // __BLOCH_H

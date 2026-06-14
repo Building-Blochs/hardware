@@ -1,17 +1,17 @@
 #include "gui.h"
 #include "bloch.h"
 #include "config.h" // For DISPLAY_WIDTH, DISPLAY_HEIGHT
-#include "lgfx.h"   // For swipe_direction_t, lgfx_pop_swipe
+#include "lgfx.h"
 #include "receiver.h"
 
 extern BlochSphere bloch; // main.cpp
 
-// GUI
-lv_obj_t *screen;
-lv_obj_t *tileview;
-lv_obj_t *tile1;
-lv_obj_t *tile2;
-lv_obj_t *tile3;
+// --- LVGL object tree (all module-private) ---
+static lv_obj_t *screen;
+static lv_obj_t *tileview;
+static lv_obj_t *tile1;
+static lv_obj_t *tile2;
+static lv_obj_t *tile3;
 
 static lv_obj_t *gate_buttons[8]; // Expanded to 8 buttons
 static lv_obj_t *gate_labels[8];
@@ -27,8 +27,8 @@ static lv_style_t style_reset_label;
 static lv_style_t style_info_label;
 static lv_style_t style_state_label;
 
-lv_obj_t *ble_overlay;
-lv_obj_t *ble_label;
+static lv_obj_t *ble_overlay;
+static lv_obj_t *ble_label;
 
 static bool ble_is_connected = false;
 static unsigned long ble_disconnect_time = 0;

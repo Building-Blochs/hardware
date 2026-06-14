@@ -1,0 +1,15 @@
+name: "Firmware boot sequence"
+version: 1
+
+# Verify that the firmware reaches the end of setup() without crashing.
+# Serial.printf() lines come from main.cpp::setup().
+# DBG() lines include __FILE__ and __FUNCTION__, e.g.:
+#   src/main.cpp.setup: Setup done.
+
+steps:
+  - wait-serial: "Serial"
+  - wait-serial: "receiver_setup"
+  - wait-serial: "gui_begin"
+  - wait-serial: "bloch.begin"
+  - wait-serial: "initial rotate"
+  - wait-serial: "Setup done."

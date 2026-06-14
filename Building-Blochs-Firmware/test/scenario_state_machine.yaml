@@ -1,0 +1,29 @@
+name: "BlochSphere state machine: RESET to IDLE"
+version: 1
+
+# After setup() the BlochSphere state machine runs in loop().
+# DBG() in bloch.cpp::loop() logs every state transition as:
+#   src/bloch.cpp.loop: <millis>: State <from> -> <to>
+#
+# The StateNames array uses short labels (see bloch.h):
+#   {"<none>", "RESET", "IDLE", "START", "BUSY", "END"}
+
+steps:
+  # Wait for the firmware to finish booting
+  - wait-serial: "Setup done."
+
+  # First loop() tick: initial _state is RESET, _prvstate is _NONE
+  - wait-serial: "State <none> -> RESET"
+
+  # RESET handler transitions immediately to IDLE
+  - wait-serial: "State RESET -> IDLE"
+
+  # The initial bloch.rotate() call in setup() queued a move.
+  # IDLE detects non-empty queue and moves to MOVE_START.
+  - wait-serial: "State IDLE -> START"
+
+  # MOVE_START logs the motor step counts: "Move (x, y, z) (max=…)"
+  - wait-serial: "Move ("
+
+  # After motors finish: MOVE_END → IDLE (no more queued moves)
+  - wait-serial: "State"

@@ -19,13 +19,6 @@ static void lv_disp_cb(lv_disp_drv_t *, const lv_area_t *, lv_color_t *);
 lv_indev_drv_t _lv_touch_drv; /*Descriptor of a input device driver*/
 static void lv_touchpad_cb(lv_indev_drv_t *, lv_indev_data_t *);
 
-static bool _touch_active = false;
-static uint16_t _touch_start_x = 0;
-static uint16_t _touch_start_y = 0;
-static uint16_t _touch_last_x = 0;
-static uint16_t _touch_last_y = 0;
-static swipe_direction_t _pending_swipe = SWIPE_NONE;
-
 // M5Stack has Lovyan Auto-detect, apparently
 LGFX _lgfx;
 
