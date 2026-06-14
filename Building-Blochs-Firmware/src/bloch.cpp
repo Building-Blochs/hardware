@@ -15,8 +15,10 @@ BlochSphere::BlochSphere()
     : _motor1(AccelStepper::DRIVER, M5_STEPMOTORDRIVER_STP_X, M5_STEPMOTORDRIVER_DIR_X),
       _motor2(AccelStepper::DRIVER, M5_STEPMOTORDRIVER_STP_Y, M5_STEPMOTORDRIVER_DIR_Y),
       _motor3(AccelStepper::DRIVER, M5_STEPMOTORDRIVER_STP_Z, M5_STEPMOTORDRIVER_DIR_Z),
-      _bloch_state(0, 0, 1)
+      _bloch_state(0, 0, 1),
+      _queue_mutex(nullptr)
 {
+    _queue_mutex = xSemaphoreCreateMutex();
 }
 
 BlochSphere::~BlochSphere() {}
@@ -56,8 +58,10 @@ void BlochSphere::reset()
 {
     _bloch_state = Vector3d(0, 0, 1);
 
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
     MovementQueue_t empty;
     _queue.swap(empty);
+    xSemaphoreGive(_queue_mutex);
 
     _state = RESET;
 }
@@ -75,7 +79,9 @@ bool BlochSphere::rotate(const Vector3d axis, const int steps)
     _bloch_state = (v * c) + (k.cross(v) * s) + (k * k.dot(v) * (1.0 - c));
     _bloch_state.normalize();
 
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
     _queue.push(_motormatrix * axis.normalized() * steps);
+    xSemaphoreGive(_queue_mutex);
     return true;
 }
 
@@ -113,19 +119,17 @@ void BlochSphere::loop()
         break;
 
     case IDLE:
-        if (!_queue.empty())
-            _state = MOVE_START;
+        xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+        if (!_queue.empty()) _state = MOVE_START;
+        xSemaphoreGive(_queue_mutex);
         return;
 
     case MOVE_START:
-        if (_queue.empty())
-        {
-            _state = IDLE;
-            break;
-        }
-
+        xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+        if (_queue.empty()) { xSemaphoreGive(_queue_mutex); _state = IDLE; break; }
         move = _queue.front();
         _queue.pop();
+        xSemaphoreGive(_queue_mutex);
 
         _driver.enableMotor(1);
 
@@ -133,13 +137,13 @@ void BlochSphere::loop()
         // share of the total move, so all three finish simultaneously.
         max_move = max(max(abs(move[0]), abs(move[1])), abs(move[2]));
 
-        _motor1.setAcceleration(move[2] / max_move * MOTORS_MAX_ACCEL);
-        _motor2.setAcceleration(move[1] / max_move * MOTORS_MAX_ACCEL);
-        _motor3.setAcceleration(move[0] / max_move * MOTORS_MAX_ACCEL);
+        _motor1.setAcceleration(abs(move[2]) / max_move * MOTORS_MAX_ACCEL);
+        _motor2.setAcceleration(abs(move[1]) / max_move * MOTORS_MAX_ACCEL);
+        _motor3.setAcceleration(abs(move[0]) / max_move * MOTORS_MAX_ACCEL);
 
-        _motor1.setMaxSpeed(move[2] / max_move * MOTORS_MAX_SPEED);
-        _motor2.setMaxSpeed(move[1] / max_move * MOTORS_MAX_SPEED);
-        _motor3.setMaxSpeed(move[0] / max_move * MOTORS_MAX_SPEED);
+        _motor1.setMaxSpeed(abs(move[2]) / max_move * MOTORS_MAX_SPEED);
+        _motor2.setMaxSpeed(abs(move[1]) / max_move * MOTORS_MAX_SPEED);
+        _motor3.setMaxSpeed(abs(move[0]) / max_move * MOTORS_MAX_SPEED);
 
         DBG("%lu: Move (%.0f, %.0f, %.0f) (max=%.0f)", millis(), move[0], move[1], move[2], max_move);
         _motor1.move(move[2]);

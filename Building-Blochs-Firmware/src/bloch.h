@@ -6,6 +6,8 @@
 #include <AccelStepper.h>
 #include <Module_Stepmotor.h>
 #include <queue>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 using namespace Eigen;
 
@@ -57,6 +59,7 @@ private:
 
     typedef std::queue<Vector3d> MovementQueue_t;
     MovementQueue_t _queue;
+    SemaphoreHandle_t _queue_mutex;
 
     Module_Stepmotor _driver;
     AccelStepper _motor1;
