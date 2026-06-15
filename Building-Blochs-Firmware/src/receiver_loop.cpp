@@ -213,6 +213,15 @@ void receiver_loop()
             pulseEnd = millis() + tokens[i+4].toInt();
             i += 4;
         }
+        else if (cmd == "rotate" && i + 4 < tokenCount)
+        {
+            double ax    = tokens[i+1].toDouble();
+            double ay    = tokens[i+2].toDouble();
+            double az    = tokens[i+3].toDouble();
+            double turns = tokens[i+4].toDouble();
+            executeRotation(Vector3d(ax, ay, az), turns);
+            i += 4;
+        }
         else if (cmd == "delay" && i + 1 < tokenCount)
         {
             delay(tokens[i+1].toInt());
