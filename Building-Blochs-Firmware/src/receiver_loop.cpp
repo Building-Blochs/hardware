@@ -196,11 +196,44 @@ void receiver_loop()
         else if (cmd == "Tgate")  receiver_apply_permute(BlochSphere::PERMUTE_T);
         else if (cmd == "T+gate") receiver_apply_permute(BlochSphere::PERMUTE_NT);
 
+        // --- Parametric rotation gates ---
+        else if (cmd == "Rx" && i + 1 < tokenCount)
+        {
+            executeRotation(Vector3d(1, 0, 0), tokens[i+1].toDouble());
+            i++;
+        }
+        else if (cmd == "Ry" && i + 1 < tokenCount)
+        {
+            executeRotation(Vector3d(0, 1, 0), tokens[i+1].toDouble());
+            i++;
+        }
+        else if (cmd == "Rz" && i + 1 < tokenCount)
+        {
+            executeRotation(Vector3d(0, 0, 1), tokens[i+1].toDouble());
+            i++;
+        }
+        else if (cmd == "SXgate") executeRotation(Vector3d(1, 0, 0), 0.25);
+
         // --- Control commands ---
         else if (cmd == "reset")
         {
             receiver_reset_bloch();
         }
+        // Snap immediately to |0⟩ (hard reset, no animation).
+        else if (cmd == "home")
+        {
+            double dummy_axis[3];
+            double dummy_turns = 0.0;
+            netRotation.calculateReset(dummy_axis, dummy_turns);
+            bloch.reset();
+        }
+        // Animated moves to named Bloch-sphere states.
+        else if (cmd == "state0")     { receiver_reset_bloch(); }
+        else if (cmd == "state1")     { receiver_reset_bloch(); executeRotation(Vector3d(1, 0, 0),  0.5);  }
+        else if (cmd == "statePlus")  { receiver_reset_bloch(); executeRotation(Vector3d(0, 1, 0),  0.25); }
+        else if (cmd == "stateMinus") { receiver_reset_bloch(); executeRotation(Vector3d(0, 1, 0), -0.25); }
+        else if (cmd == "stateR")     { receiver_reset_bloch(); executeRotation(Vector3d(1, 0, 0), -0.25); }
+        else if (cmd == "stateL")     { receiver_reset_bloch(); executeRotation(Vector3d(1, 0, 0),  0.25); }
         else if (cmd == "led" && i + 3 < tokenCount)
         {
             setScreenColor(tokens[i+1].toInt(), tokens[i+2].toInt(), tokens[i+3].toInt());
@@ -221,6 +254,29 @@ void receiver_loop()
             double turns = tokens[i+4].toDouble();
             executeRotation(Vector3d(ax, ay, az), turns);
             i += 4;
+        }
+        // Send the current Bloch vector back to the connected client.
+        else if (cmd == "query")
+        {
+            if (deviceConnected)
+            {
+                Vector3d s = bloch.getState();
+                char buf[64];
+                snprintf(buf, sizeof(buf), "state,%0.4f,%0.4f,%0.4f\n",
+                         s[0], s[1], s[2]);
+                pTxCharacteristic->setValue(buf);
+                pTxCharacteristic->notify();
+            }
+        }
+        else if (cmd == "task" && i + 1 < tokenCount)
+        {
+            gui_set_ble_task(tokens[i+1].c_str());
+            i++;
+        }
+        else if (cmd == "brightness" && i + 1 < tokenCount)
+        {
+            gui_set_brightness(static_cast<uint8_t>(tokens[i+1].toInt()));
+            i++;
         }
         else if (cmd == "delay" && i + 1 < tokenCount)
         {

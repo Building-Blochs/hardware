@@ -330,3 +330,8 @@ void gui_reset_screen_color()
         lv_obj_set_style_bg_grad_dir(screen, LV_GRAD_DIR_VER, 0);
     }
 }
+
+void gui_set_brightness(uint8_t brightness)
+{
+    _lgfx.setBrightness(brightness);
+}
