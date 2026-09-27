@@ -12,6 +12,15 @@
 // Steps per revolution: 3200 steps / 58mm * 160mm = 8827
 #define STEPS_PER_ROTATION         		(3200*160/58)
 
+// Calibration: an X / Y gate (180 deg about that axis) was measured to fall
+// short by this many degrees on the physical sphere.  The matching component
+// of every motor command is scaled up to compensate (the software Bloch state
+// is not affected).
+#define X_ROTATION_SHORTFALL_DEG    3.396
+#define Y_ROTATION_SHORTFALL_DEG    1.83673469388
+#define X_ROTATION_CORRECTION       (180.0 / (180.0 - X_ROTATION_SHORTFALL_DEG))
+#define Y_ROTATION_CORRECTION       (180.0 / (180.0 - Y_ROTATION_SHORTFALL_DEG))
+
 // #define MOTORS_MAX_SPEED        20000
 // #define MOTORS_MAX_ACCEL		5000
 #define MOTORS_MAX_SPEED        15000

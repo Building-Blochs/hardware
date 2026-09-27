@@ -34,7 +34,8 @@ static bool ble_is_connected = false;
 static unsigned long ble_disconnect_time = 0;
 static char current_ble_task[64] = "";
 
-enum BleGuiState {
+enum BleGuiState
+{
     BLE_GUI_HIDDEN,
     BLE_GUI_CONNECTED,
     BLE_GUI_DISCONNECTED,
@@ -221,33 +222,44 @@ void gui_loop()
     }
 
     // --- NEW: Handle BLE Overlay State Machine ---
-    if (!ble_is_connected) {
-        if (current_ble_gui_state != BLE_GUI_HIDDEN) {
+    if (!ble_is_connected)
+    {
+        if (current_ble_gui_state != BLE_GUI_HIDDEN)
+        {
             // Switch to red error screen
-            if (current_ble_gui_state != BLE_GUI_DISCONNECTED) {
+            if (current_ble_gui_state != BLE_GUI_DISCONNECTED)
+            {
                 lv_obj_clear_flag(ble_overlay, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_set_style_bg_color(ble_overlay, lv_color_hex(0x420f14), 0); // Red
                 lv_label_set_text(ble_label, "DISCONNECTED");
                 current_ble_gui_state = BLE_GUI_DISCONNECTED;
             }
             // Auto-hide the red error screen after 2 seconds to reveal manual buttons
-            if (millis() - ble_disconnect_time > 2000) {
+            if (millis() - ble_disconnect_time > 2000)
+            {
                 lv_obj_add_flag(ble_overlay, LV_OBJ_FLAG_HIDDEN);
                 current_ble_gui_state = BLE_GUI_HIDDEN;
             }
         }
-    } else {
+    }
+    else
+    {
         // We are connected. Determine if moving or idle.
-        if (bloch.isBusy() && current_ble_task[0] != '\0') {
+        if (bloch.isBusy() && current_ble_task[0] != '\0')
+        {
             // Only update text/color if state changes or task string changes
-            if (current_ble_gui_state != BLE_GUI_BUSY || strcmp(lv_label_get_text(ble_label), current_ble_task) != 0) {
+            if (current_ble_gui_state != BLE_GUI_BUSY || strcmp(lv_label_get_text(ble_label), current_ble_task) != 0)
+            {
                 lv_obj_clear_flag(ble_overlay, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_set_style_bg_color(ble_overlay, lv_color_hex(0x000000), 0); // Black
                 lv_label_set_text(ble_label, current_ble_task);
                 current_ble_gui_state = BLE_GUI_BUSY;
             }
-        } else {
-            if (current_ble_gui_state != BLE_GUI_CONNECTED) {
+        }
+        else
+        {
+            if (current_ble_gui_state != BLE_GUI_CONNECTED)
+            {
                 lv_obj_clear_flag(ble_overlay, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_set_style_bg_color(ble_overlay, lv_color_hex(0x0C3214), 0); // Green
                 lv_label_set_text(ble_label, "CONNECTED");
@@ -261,14 +273,17 @@ void gui_loop()
 void gui_set_ble_connected(bool connected)
 {
     ble_is_connected = connected;
-    if (!connected) {
+    if (!connected)
+    {
         ble_disconnect_time = millis();
-    } else {
+    }
+    else
+    {
         current_ble_task[0] = '\0';
     }
 }
 
-void gui_set_ble_task(const char* task)
+void gui_set_ble_task(const char *task)
 {
     strncpy(current_ble_task, task, sizeof(current_ble_task) - 1);
     current_ble_task[sizeof(current_ble_task) - 1] = '\0';
@@ -313,9 +328,10 @@ static void update_state_label()
 }
 void gui_set_screen_color(int r, int g, int b)
 {
-    if (screen != NULL) {
+    if (screen != NULL)
+    {
         lv_color_t color = lv_color_make(r, g, b);
-        
+
         // Overwrite both the base color and gradient color to make it solid
         lv_obj_set_style_bg_color(screen, color, 0);
         lv_obj_set_style_bg_grad_color(screen, color, 0);
@@ -323,7 +339,8 @@ void gui_set_screen_color(int r, int g, int b)
 }
 void gui_reset_screen_color()
 {
-    if (screen != NULL) {
+    if (screen != NULL)
+    {
         // Restore the original gradient colors
         lv_obj_set_style_bg_color(screen, lv_color_hex(0x1A2A2A), 0);
         lv_obj_set_style_bg_grad_color(screen, lv_color_hex(0x264D4D), 0);
