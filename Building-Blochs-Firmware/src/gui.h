@@ -1,6 +1,8 @@
 #ifndef __GUI_H
 #define __GUI_H
 
+#include <stdint.h>
+
 void gui_begin();
 void gui_loop();
 
