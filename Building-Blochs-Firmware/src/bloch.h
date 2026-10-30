@@ -42,10 +42,18 @@ public:
     // Enqueue a rotation: axis (need not be unit), steps (signed, full rotation = STEPS_PER_ROTATION).
     bool rotate(const Vector3d axis, const int steps);
 
+    // Enqueue a rotation that leaves the tracked Bloch vector alone, for calibration.
+    void moveUntracked(const Vector3d axis, double degrees);
+
+    // Scales the motor command per axis to compensate for under-rotation.
+    void setRotationCorrection(double x, double y, double z);
+
     // Returns the software-tracked Bloch vector (unit sphere, starts at |0⟩ = (0,0,1)).
     Vector3d getState() const;
 
 private:
+    void _queueMotion(const Vector3d motion);
+
     typedef enum
     {
         _NONE,      // sentinel for first-run state-change detection
@@ -74,6 +82,8 @@ private:
 
     // Written by the GUI (core 1), read by the stepper task (core 0).
     volatile float _speed_scale = 1.0f;
+
+    Vector3d _correction = Vector3d(1, 1, 1);
 
     // Software copy of the Bloch vector, updated on every rotate() call.
     Vector3d _bloch_state;

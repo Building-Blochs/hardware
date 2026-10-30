@@ -11,4 +11,5 @@ void gui_set_ble_task(const char *task);
 void gui_set_screen_color(int r, int g, int b);
 void gui_reset_screen_color();
 void gui_set_brightness(uint8_t brightness);
+void gui_settings_changed();
 #endif // __GUI_H

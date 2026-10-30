@@ -42,6 +42,13 @@ inline void rodrigues_rotate(
     out[2] = v[2]*c + cz*s + kz*dot*(1.0 - c);
 }
 
+// New rotation correction after a calibration run: commanding commanded_deg
+// needed jog_deg more (at the current correction) to come back to the start.
+inline double calibrated_correction(double current, double commanded_deg, double jog_deg)
+{
+    return current * (commanded_deg + jog_deg) / commanded_deg;
+}
+
 // Normalise a 3-vector in-place.
 inline void vec3_normalize(double v[3])
 {

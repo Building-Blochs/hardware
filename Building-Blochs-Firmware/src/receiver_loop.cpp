@@ -1,8 +1,10 @@
 #include "receiver.h"
 #include "gui.h"
 #include "bloch.h"
+#include "calibration.h"
 #include "config.h"
 #include "quat_tracker.h"
+#include "settings.h"
 
 #include <Arduino.h>
 #include <ArduinoEigenDense.h>
@@ -62,9 +64,14 @@ static void executeRotation(Vector3d axis, double turns)
 // Public API
 // ---------------------------------------------------------------------------
 
+static String machineName()
+{
+    return "Bloch-" + String(settings.machine_number);
+}
+
 void receiver_setup()
 {
-    BLEDevice::init("M5Stack_Bloch_BLE");
+    BLEDevice::init(machineName());
 
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
@@ -129,6 +136,28 @@ void receiver_reset_bloch()
                      static_cast<int>(STEPS_PER_ROTATION * resetTurns));
 }
 
+// Forget all tracked rotations: the sphere is now at |0⟩ by definition.
+void receiver_home()
+{
+    double dummy_axis[3];
+    double dummy_turns = 0.0;
+    netRotation.calculateReset(dummy_axis, dummy_turns);
+    bloch.reset();
+}
+
+// Takes effect now when idle; a connected client keeps its connection and the
+// new name is advertised after it disconnects.
+void receiver_apply_machine_name()
+{
+    BLEAdvertising *advertising = pServer->getAdvertising();
+    advertising->stop();
+    advertising->setName(machineName());
+    if (!deviceConnected)
+    {
+        advertising->start();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BLE receive loop — parses comma-separated command strings.
 // ---------------------------------------------------------------------------
@@ -155,6 +184,13 @@ void receiver_loop()
     {
         oldDeviceConnected = deviceConnected;
         gui_set_ble_connected(true);
+    }
+
+    // Moves from a client would invalidate the calibration measurement
+    if (calibration_active())
+    {
+        bleBuffer = "";
+        return;
     }
 
     // --- Command parsing ---
@@ -255,10 +291,7 @@ void receiver_loop()
         // Snap immediately to |0⟩ (hard reset, no animation).
         else if (cmd == "home")
         {
-            double dummy_axis[3];
-            double dummy_turns = 0.0;
-            netRotation.calculateReset(dummy_axis, dummy_turns);
-            bloch.reset();
+            receiver_home();
         }
         // Animated moves to named Bloch-sphere states.
         else if (cmd == "state0")

@@ -79,14 +79,26 @@ bool BlochSphere::rotate(const Vector3d axis, const int steps)
     _bloch_state = (v * c) + (k.cross(v) * s) + (k * k.dot(v) * (1.0 - c));
     _bloch_state.normalize();
 
-    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
-    // Compensate for the measured under-rotation about the X and Y axes.
-    Vector3d motion = k * steps;
-    motion.x() *= X_ROTATION_CORRECTION;
-    motion.y() *= Y_ROTATION_CORRECTION;
-    _queue.push(_motormatrix * motion);
-    xSemaphoreGive(_queue_mutex);
+    _queueMotion(k * steps);
     return true;
+}
+
+void BlochSphere::moveUntracked(const Vector3d axis, double degrees)
+{
+    _queueMotion(axis.normalized() * (degrees / 360.0 * STEPS_PER_ROTATION));
+}
+
+void BlochSphere::setRotationCorrection(double x, double y, double z)
+{
+    _correction = Vector3d(x, y, z);
+}
+
+void BlochSphere::_queueMotion(const Vector3d motion)
+{
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+    // Compensate for the measured under-rotation about each axis.
+    _queue.push(_motormatrix * motion.cwiseProduct(_correction));
+    xSemaphoreGive(_queue_mutex);
 }
 
 Vector3d BlochSphere::getState() const

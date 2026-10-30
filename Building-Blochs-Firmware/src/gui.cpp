@@ -1,5 +1,6 @@
 #include "gui.h"
 #include "bloch.h"
+#include "calibration.h"
 #include "config.h" // For DISPLAY_WIDTH, DISPLAY_HEIGHT
 #include "lgfx.h"
 #include "receiver.h"
@@ -32,6 +33,8 @@ static lv_obj_t *brightness_slider;
 static lv_obj_t *brightness_value_label;
 static lv_obj_t *page_mode_matrix;
 static lv_obj_t *dim_matrix;
+static lv_obj_t *machine_value_label;
+static lv_obj_t *defaults_label;
 
 static lv_style_t style_gate_btn;
 static lv_style_t style_gate_label;
@@ -60,6 +63,9 @@ static uint8_t current_brightness = DEFAULT_BRIGHTNESS;
 static bool screen_dimmed = false;
 static bool settings_dirty = false;
 static unsigned long settings_changed_time = 0;
+static bool machine_name_dirty = false;
+static bool defaults_armed = false;
+static unsigned long defaults_armed_time = 0;
 
 typedef struct
 {
@@ -94,6 +100,7 @@ static const int bar_w = 44;
 
 static const unsigned long kSettingsSaveDelayMs = 2000;
 static const int kSettingsAnimMs = 200;
+static const unsigned long kDefaultsConfirmMs = 3000;
 
 static const char *kPageModeMap[] = {"Swipe", "Flip", ""};
 static const char *kDimMap[] = {"Off", "1m", "5m", "10m", ""};
@@ -118,7 +125,6 @@ static void apply_settings();
 static void apply_page_mode();
 static void update_settings_widgets();
 static void update_value_labels();
-static void mark_settings_changed();
 static void update_screen_dim();
 static void apply_backlight();
 
@@ -236,6 +242,7 @@ void gui_begin()
     lv_obj_set_style_text_color(ble_label, lv_color_hex(0xFFFFFF), 0);
 
     create_settings_panel();
+    calibration_create();
     apply_settings();
 
     // load screen
@@ -265,11 +272,23 @@ void gui_loop()
     }
 
     update_screen_dim();
+    calibration_loop();
 
-    if (settings_dirty && !bloch.isBusy() && now - settings_changed_time > kSettingsSaveDelayMs)
+    if (defaults_armed && now - defaults_armed_time > kDefaultsConfirmMs)
+    {
+        defaults_armed = false;
+        lv_label_set_text(defaults_label, "Restore defaults");
+    }
+
+    if (settings_dirty && !bloch.isBusy() && !calibration_active() && now - settings_changed_time > kSettingsSaveDelayMs)
     {
         settings_save();
         settings_dirty = false;
+        if (machine_name_dirty)
+        {
+            receiver_apply_machine_name();
+            machine_name_dirty = false;
+        }
     }
 
     // --- NEW: Handle BLE Overlay State Machine ---
@@ -473,7 +492,7 @@ static void settings_slider_event_handler(lv_event_t *e)
         gui_set_brightness(settings.brightness);
     }
     update_value_labels();
-    mark_settings_changed();
+    gui_settings_changed();
 }
 
 static void settings_matrix_event_handler(lv_event_t *e)
@@ -494,7 +513,23 @@ static void settings_matrix_event_handler(lv_event_t *e)
     {
         settings.dim_minutes = kDimMinutes[selected];
     }
-    mark_settings_changed();
+    gui_settings_changed();
+}
+
+static void machine_number_event_handler(lv_event_t *e)
+{
+    const int step = (int)(intptr_t)lv_event_get_user_data(e);
+    // Wrap around, so 99 is one tap away from 1
+    settings.machine_number = (settings.machine_number - 1 + step + MAX_MACHINE_NUMBER) % MAX_MACHINE_NUMBER + 1;
+    update_value_labels();
+    machine_name_dirty = true;
+    gui_settings_changed();
+}
+
+static void calibrate_event_handler(lv_event_t *e)
+{
+    show_settings(false);
+    calibration_start();
 }
 
 static void settings_close_event_handler(lv_event_t *e)
@@ -502,11 +537,41 @@ static void settings_close_event_handler(lv_event_t *e)
     show_settings(false);
 }
 
+// Also discards the calibration, so it takes a second tap
 static void settings_defaults_event_handler(lv_event_t *e)
 {
+    if (!defaults_armed)
+    {
+        defaults_armed = true;
+        defaults_armed_time = millis();
+        lv_label_set_text(defaults_label, "Tap again to confirm");
+        return;
+    }
+
+    defaults_armed = false;
+    lv_label_set_text(defaults_label, "Restore defaults");
     settings_restore_defaults();
     apply_settings();
-    mark_settings_changed();
+    machine_name_dirty = true;
+    gui_settings_changed();
+}
+
+static lv_obj_t *create_machine_button(int x, const char *text, int step)
+{
+    lv_obj_t *button = lv_btn_create(settings_panel);
+    lv_obj_add_style(button, &style_gate_btn, 0);
+    lv_obj_set_pos(button, x, 158);
+    lv_obj_set_size(button, 56, 28);
+    lv_obj_set_style_pad_all(button, 0, 0);
+    lv_obj_add_event_cb(button, machine_number_event_handler, LV_EVENT_CLICKED, (void *)(intptr_t)step);
+    lv_obj_add_event_cb(button, machine_number_event_handler, LV_EVENT_LONG_PRESSED_REPEAT, (void *)(intptr_t)step);
+
+    lv_obj_t *label = lv_label_create(button);
+    lv_obj_add_style(label, &style_info_label, 0);
+    lv_label_set_text(label, text);
+    lv_obj_center(label);
+
+    return button;
 }
 
 static lv_obj_t *create_settings_row_label(const char *name, int y)
@@ -541,14 +606,14 @@ static lv_obj_t *create_settings_slider(const char *name, int y, int min, int ma
 
 static lv_obj_t *create_settings_matrix(const char *name, int y, const char **map)
 {
-    create_settings_row_label(name, y + 8);
+    create_settings_row_label(name, y + 6);
 
     lv_obj_t *matrix = lv_btnmatrix_create(settings_panel);
     lv_btnmatrix_set_map(matrix, map);
     lv_btnmatrix_set_btn_ctrl_all(matrix, LV_BTNMATRIX_CTRL_CHECKABLE);
     lv_btnmatrix_set_one_checked(matrix, true);
     lv_obj_set_pos(matrix, 104, y);
-    lv_obj_set_size(matrix, 206, 34);
+    lv_obj_set_size(matrix, 206, 28);
     lv_obj_set_style_bg_opa(matrix, 0, LV_PART_MAIN);
     lv_obj_set_style_border_width(matrix, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(matrix, 0, LV_PART_MAIN);
@@ -594,18 +659,38 @@ static void create_settings_panel()
     lv_label_set_text(close_label, LV_SYMBOL_CLOSE);
     lv_obj_center(close_label);
 
-    speed_slider = create_settings_slider("Speed", 50, MIN_SPEED_PERCENT, 100, &speed_value_label);
-    brightness_slider = create_settings_slider("Brightness", 82, MIN_BRIGHTNESS, 255, &brightness_value_label);
-    page_mode_matrix = create_settings_matrix("Pages", 110, kPageModeMap);
-    dim_matrix = create_settings_matrix("Dim after", 150, kDimMap);
+    speed_slider = create_settings_slider("Speed", 44, MIN_SPEED_PERCENT, 100, &speed_value_label);
+    brightness_slider = create_settings_slider("Brightness", 68, MIN_BRIGHTNESS, 255, &brightness_value_label);
+    page_mode_matrix = create_settings_matrix("Pages", 90, kPageModeMap);
+    dim_matrix = create_settings_matrix("Dim after", 124, kDimMap);
+
+    create_settings_row_label("Bluetooth", 164);
+    create_machine_button(104, LV_SYMBOL_MINUS, -1);
+    create_machine_button(254, LV_SYMBOL_PLUS, 1);
+    machine_value_label = lv_label_create(settings_panel);
+    lv_obj_add_style(machine_value_label, &style_state_label, 0);
+    lv_obj_set_width(machine_value_label, 86);
+    lv_obj_set_style_text_align(machine_value_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(machine_value_label, 164, 164);
+
+    lv_obj_t *calibrate_button = lv_btn_create(settings_panel);
+    lv_obj_add_style(calibrate_button, &style_gate_btn, 0);
+    lv_obj_set_pos(calibrate_button, 10, 194);
+    lv_obj_set_size(calibrate_button, 145, 38);
+    lv_obj_add_event_cb(calibrate_button, calibrate_event_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *calibrate_label = lv_label_create(calibrate_button);
+    lv_obj_add_style(calibrate_label, &style_info_label, 0);
+    lv_label_set_text(calibrate_label, "Calibrate");
+    lv_obj_center(calibrate_label);
 
     lv_obj_t *defaults_button = lv_btn_create(settings_panel);
     lv_obj_add_style(defaults_button, &style_reset_btn, 0);
-    lv_obj_set_pos(defaults_button, 10, 194);
-    lv_obj_set_size(defaults_button, 170, 36);
+    lv_obj_set_pos(defaults_button, 165, 194);
+    lv_obj_set_size(defaults_button, 145, 38);
     lv_obj_add_event_cb(defaults_button, settings_defaults_event_handler, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *defaults_label = lv_label_create(defaults_button);
+    defaults_label = lv_label_create(defaults_button);
     lv_obj_add_style(defaults_label, &style_info_label, 0);
     lv_label_set_text(defaults_label, "Restore defaults");
     lv_obj_center(defaults_label);
@@ -613,7 +698,7 @@ static void create_settings_panel()
     lv_obj_t *version_label = lv_label_create(settings_panel);
     lv_obj_add_style(version_label, &style_info_label, 0);
     lv_label_set_text(version_label, "v" VERSIONSTR);
-    lv_obj_align(version_label, LV_ALIGN_BOTTOM_RIGHT, -10, -18);
+    lv_obj_align(version_label, LV_ALIGN_TOP_RIGHT, -64, 14);
 }
 
 static void settings_set_y_cb(void *obj, int32_t y)
@@ -647,6 +732,7 @@ static void show_settings(bool open)
 static void apply_settings()
 {
     bloch.setSpeedPercent(settings.speed_percent);
+    bloch.setRotationCorrection(settings.correction[0], settings.correction[1], settings.correction[2]);
     gui_set_brightness(settings.brightness);
     apply_page_mode();
     update_settings_widgets();
@@ -704,10 +790,11 @@ static void update_value_labels()
 {
     lv_label_set_text_fmt(speed_value_label, "%d%%", (int)lv_slider_get_value(speed_slider));
     lv_label_set_text_fmt(brightness_value_label, "%d%%", (int)lv_slider_get_value(brightness_slider) * 100 / 255);
+    lv_label_set_text_fmt(machine_value_label, "Bloch-%d", settings.machine_number);
 }
 
 // Saved later from gui_loop(), once the motors are idle
-static void mark_settings_changed()
+void gui_settings_changed()
 {
     settings_dirty = true;
     settings_changed_time = millis();

@@ -40,6 +40,30 @@ static void rotate_bloch(double state[3], const double axis[3], double turns)
 // Rodrigues rotation tests
 // ---------------------------------------------------------------------------
 
+void test_calibrated_correction_corrects_undershoot(void)
+{
+    // The sphere only makes 0.98 of what is commanded, seen through a start
+    // correction of 1.0: 1440 deg needs a nudge until it has really turned 1440.
+    const double gain = 0.98;
+    const double jog = 1440.0 / gain - 1440.0;
+    const double updated = calibrated_correction(1.0, 1440.0, jog);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 1.0, updated * gain);
+}
+
+void test_calibrated_correction_converges_from_previous_value(void)
+{
+    const double gain = 0.98;
+    const double current = 1.01;
+    const double jog = 1440.0 / (gain * current) - 1440.0;
+    const double updated = calibrated_correction(current, 1440.0, jog);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-9, 1.0, updated * gain);
+}
+
+void test_calibrated_correction_unchanged_without_jog(void)
+{
+    TEST_ASSERT_DOUBLE_WITHIN(1e-12, 1.02, calibrated_correction(1.02, 1440.0, 0.0));
+}
+
 void test_rodrigues_identity(void)
 {
     // Rotating by 0 turns should leave vector unchanged
@@ -461,6 +485,9 @@ void tearDown(void) {}
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_calibrated_correction_corrects_undershoot);
+    RUN_TEST(test_calibrated_correction_converges_from_previous_value);
+    RUN_TEST(test_calibrated_correction_unchanged_without_jog);
 
     // Rodrigues rotation
     RUN_TEST(test_rodrigues_identity);

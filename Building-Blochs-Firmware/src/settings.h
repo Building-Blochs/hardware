@@ -10,6 +10,8 @@ typedef struct
     uint8_t brightness;    // display backlight, 0-255
     bool flip_pages;       // false = swipe between pages, true = side bars
     uint8_t dim_minutes;   // dim the display when idle this long, 0 = never
+    float correction[3];   // X, Y, Z rotation correction, set by calibration
+    uint8_t machine_number; // advertised over BLE as Bloch-<number>
 } settings_t;
 
 extern settings_t settings;
