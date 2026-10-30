@@ -36,6 +36,9 @@ public:
 
     bool isBusy() const;
 
+    // Motor speed and acceleration as a percentage of the maximum, used from the next move on.
+    void setSpeedPercent(int percent);
+
     // Enqueue a rotation: axis (need not be unit), steps (signed, full rotation = STEPS_PER_ROTATION).
     bool rotate(const Vector3d axis, const int steps);
 
@@ -68,6 +71,9 @@ private:
 
     // Maps a rotation axis in Bloch-sphere coordinates to motor step counts.
     Matrix3d _motormatrix;
+
+    // Written by the GUI (core 1), read by the stepper task (core 0).
+    volatile float _speed_scale = 1.0f;
 
     // Software copy of the Bloch vector, updated on every rotate() call.
     Vector3d _bloch_state;

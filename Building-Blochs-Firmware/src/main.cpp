@@ -9,6 +9,7 @@
 #include "bloch.h"
 #include "gui.h"
 #include "receiver.h"
+#include "settings.h"
 
 BlochSphere bloch;
 
@@ -43,6 +44,7 @@ void setup()
 {
     Serial.begin(115200);
 
+    settings_load();
     receiver_setup();
     gui_begin();
     bloch.begin();

@@ -27,10 +27,14 @@
 // #define MOTORS_MAX_ACCEL		5000
 #define MOTORS_MAX_SPEED        15000
 #define MOTORS_MAX_ACCEL		4000
+#define MIN_SPEED_PERCENT		20					// Lowest speed on the settings screen
 
 #define DISPLAY_MAXFPS			30					// LVGL Update rate (timer_event)
 #define DISPLAY_WIDTH			320
 #define DISPLAY_HEIGHT			240
+#define DEFAULT_BRIGHTNESS		127
+#define MIN_BRIGHTNESS			10					// Keeps the display readable
+#define DIM_BRIGHTNESS			20					// Backlight while idle-dimmed
 
 // PINS
 

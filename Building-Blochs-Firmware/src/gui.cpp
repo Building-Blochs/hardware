@@ -3,6 +3,7 @@
 #include "config.h" // For DISPLAY_WIDTH, DISPLAY_HEIGHT
 #include "lgfx.h"
 #include "receiver.h"
+#include "settings.h"
 
 extern BlochSphere bloch; // main.cpp
 
@@ -19,8 +20,18 @@ static lv_obj_t *tile_copy_of_1;
 
 static lv_obj_t *gate_buttons[8]; // Expanded to 8 buttons
 static lv_obj_t *reset_button;
+static lv_obj_t *prev_page_bar;
+static lv_obj_t *next_page_bar;
 static lv_obj_t *hint_label;
 static lv_obj_t *state_label;
+
+static lv_obj_t *settings_panel;
+static lv_obj_t *speed_slider;
+static lv_obj_t *speed_value_label;
+static lv_obj_t *brightness_slider;
+static lv_obj_t *brightness_value_label;
+static lv_obj_t *page_mode_matrix;
+static lv_obj_t *dim_matrix;
 
 static lv_style_t style_gate_btn;
 static lv_style_t style_gate_label;
@@ -44,6 +55,11 @@ enum BleGuiState
     BLE_GUI_BUSY
 };
 static BleGuiState current_ble_gui_state = BLE_GUI_HIDDEN;
+
+static uint8_t current_brightness = DEFAULT_BRIGHTNESS;
+static bool screen_dimmed = false;
+static bool settings_dirty = false;
+static unsigned long settings_changed_time = 0;
 
 typedef struct
 {
@@ -74,13 +90,37 @@ static const int left_x = 4;
 static const int right_x = left_x + btn_w + gap;
 static const int top_y = top_h + 2;
 static const int bottom_y = top_y + btn_h + gap;
+static const int bar_w = 44;
+
+static const unsigned long kSettingsSaveDelayMs = 2000;
+static const int kSettingsAnimMs = 200;
+
+static const char *kPageModeMap[] = {"Swipe", "Flip", ""};
+static const char *kDimMap[] = {"Off", "1m", "5m", "10m", ""};
+static const uint8_t kDimMinutes[] = {0, 1, 5, 10};
 
 static void gate_event_handler(lv_event_t *e);
 static void reset_event_handler(lv_event_t *e);
 static void update_state_label();
 static lv_obj_t *create_gate_button(lv_obj_t *parent, int gate);
 static lv_obj_t *create_reset_page(lv_obj_t *parent);
+static void place_gate_button(lv_obj_t *btn, int gate, int area_x, int area_w);
 static void gui_wrap_tiles();
+static lv_obj_t *create_page_bar(lv_align_t align, const char *symbol, int step);
+static void page_bar_event_handler(lv_event_t *e);
+static void screen_gesture_handler(lv_event_t *e);
+static void settings_gesture_handler(lv_event_t *e);
+static void create_settings_panel();
+static lv_obj_t *create_settings_slider(const char *name, int y, int min, int max, lv_obj_t **value_label);
+static lv_obj_t *create_settings_matrix(const char *name, int y, const char **map);
+static void show_settings(bool open);
+static void apply_settings();
+static void apply_page_mode();
+static void update_settings_widgets();
+static void update_value_labels();
+static void mark_settings_changed();
+static void update_screen_dim();
+static void apply_backlight();
 
 void gui_begin()
 {
@@ -96,6 +136,10 @@ void gui_begin()
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x1A2A2A), 0);
     lv_obj_set_style_bg_grad_color(screen, lv_color_hex(0x264D4D), 0);
     lv_obj_set_style_bg_grad_dir(screen, LV_GRAD_DIR_VER, 0);
+    // The full-size BLE overlay overflows the screen padding; a vertical swipe
+    // must stay a gesture instead of scrolling the screen.
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(screen, screen_gesture_handler, LV_EVENT_GESTURE, NULL);
 
     lv_style_init(&style_gate_btn);
     lv_style_set_radius(&style_gate_btn, 10);
@@ -133,7 +177,6 @@ void gui_begin()
 
     hint_label = lv_label_create(screen);
     lv_obj_add_style(hint_label, &style_info_label, 0);
-    lv_label_set_text(hint_label, "Swipe < > for gates and reset");
     lv_obj_align(hint_label, LV_ALIGN_TOP_MID, 0, 2);
 
     state_label = lv_label_create(screen);
@@ -173,6 +216,9 @@ void gui_begin()
 
     lv_obj_set_tile(tileview, tile1, LV_ANIM_OFF);
 
+    prev_page_bar = create_page_bar(LV_ALIGN_LEFT_MID, LV_SYMBOL_LEFT, -1);
+    next_page_bar = create_page_bar(LV_ALIGN_RIGHT_MID, LV_SYMBOL_RIGHT, 1);
+
     update_state_label();
 
     ble_overlay = lv_obj_create(screen);
@@ -188,6 +234,9 @@ void gui_begin()
     lv_obj_center(ble_label);
     lv_obj_set_style_text_font(ble_label, &lv_font_montserrat_26, 0);
     lv_obj_set_style_text_color(ble_label, lv_color_hex(0xFFFFFF), 0);
+
+    create_settings_panel();
+    apply_settings();
 
     // load screen
     lv_scr_load_anim(screen, LV_SCR_LOAD_ANIM_FADE_ON, 200, 0, false);
@@ -213,6 +262,14 @@ void gui_loop()
         prv_tick = now;
         lv_timer_handler();
         gui_wrap_tiles();
+    }
+
+    update_screen_dim();
+
+    if (settings_dirty && !bloch.isBusy() && now - settings_changed_time > kSettingsSaveDelayMs)
+    {
+        settings_save();
+        settings_dirty = false;
     }
 
     // --- NEW: Handle BLE Overlay State Machine ---
@@ -287,14 +344,7 @@ static lv_obj_t *create_gate_button(lv_obj_t *parent, int gate)
 {
     lv_obj_t *btn = lv_btn_create(parent);
     lv_obj_add_style(btn, &style_gate_btn, 0);
-
-    // Local index (0 to 3) for layout math on the current tile
-    int local_i = gate % 4;
-    const int x = (local_i % 2 == 0) ? left_x : right_x;
-    const int y = (local_i < 2) ? top_y : bottom_y;
-
-    lv_obj_set_pos(btn, x, y);
-    lv_obj_set_size(btn, btn_w, btn_h);
+    place_gate_button(btn, gate, left_x, grid_w);
 
     lv_obj_t *label = lv_label_create(btn);
     lv_obj_add_style(label, &style_gate_label, 0);
@@ -302,6 +352,19 @@ static lv_obj_t *create_gate_button(lv_obj_t *parent, int gate)
     lv_obj_center(label);
 
     return btn;
+}
+
+// Lay a gate out in the 2x2 grid spanning area_w from area_x
+static void place_gate_button(lv_obj_t *btn, int gate, int area_x, int area_w)
+{
+    // Local index (0 to 3) for layout math on the current tile
+    int local_i = gate % 4;
+    const int w = (area_w - gap) / 2;
+    const int x = (local_i % 2 == 0) ? area_x : area_x + w + gap;
+    const int y = (local_i < 2) ? top_y : bottom_y;
+
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_size(btn, w, btn_h);
 }
 
 static lv_obj_t *create_reset_page(lv_obj_t *parent)
@@ -342,6 +405,336 @@ static void gui_wrap_tiles()
     {
         lv_obj_set_tile(tileview, tile1, LV_ANIM_OFF);
     }
+}
+
+static lv_obj_t *create_page_bar(lv_align_t align, const char *symbol, int step)
+{
+    lv_obj_t *bar = lv_btn_create(screen);
+    lv_obj_add_style(bar, &style_gate_btn, 0);
+    lv_obj_set_size(bar, bar_w, grid_h);
+    lv_obj_align(bar, align, 0, 0);
+    lv_obj_add_event_cb(bar, page_bar_event_handler, LV_EVENT_CLICKED, (void *)(intptr_t)step);
+
+    lv_obj_t *label = lv_label_create(bar);
+    lv_obj_add_style(label, &style_gate_label, 0);
+    lv_label_set_text(label, symbol);
+    lv_obj_center(label);
+
+    return bar;
+}
+
+static void page_bar_event_handler(lv_event_t *e)
+{
+    lv_obj_t *const pages[] = {tile1, tile2, tile3};
+    const int page_count = sizeof(pages) / sizeof(pages[0]);
+    const int step = (int)(intptr_t)lv_event_get_user_data(e);
+
+    const lv_obj_t *active = lv_tileview_get_tile_act(tileview);
+    int page = 0;
+    while (page < page_count - 1 && pages[page] != active)
+    {
+        ++page;
+    }
+    lv_obj_set_tile(tileview, pages[(page + step + page_count) % page_count], LV_ANIM_OFF);
+}
+
+static void screen_gesture_handler(lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_get_act();
+    if (lv_indev_get_gesture_dir(indev) == LV_DIR_TOP)
+    {
+        // Cancel the press, or a swipe starting on a button would also click it
+        lv_indev_wait_release(indev);
+        show_settings(true);
+    }
+}
+
+static void settings_gesture_handler(lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_get_act();
+    if (lv_indev_get_gesture_dir(indev) == LV_DIR_BOTTOM)
+    {
+        lv_indev_wait_release(indev);
+        show_settings(false);
+    }
+}
+
+static void settings_slider_event_handler(lv_event_t *e)
+{
+    const lv_obj_t *target = lv_event_get_target(e);
+    if (target == speed_slider)
+    {
+        settings.speed_percent = lv_slider_get_value(speed_slider);
+        bloch.setSpeedPercent(settings.speed_percent);
+    }
+    else
+    {
+        settings.brightness = lv_slider_get_value(brightness_slider);
+        gui_set_brightness(settings.brightness);
+    }
+    update_value_labels();
+    mark_settings_changed();
+}
+
+static void settings_matrix_event_handler(lv_event_t *e)
+{
+    lv_obj_t *target = lv_event_get_target(e);
+    const uint16_t selected = lv_btnmatrix_get_selected_btn(target);
+    if (selected == LV_BTNMATRIX_BTN_NONE)
+    {
+        return;
+    }
+
+    if (target == page_mode_matrix)
+    {
+        settings.flip_pages = (selected == 1);
+        apply_page_mode();
+    }
+    else
+    {
+        settings.dim_minutes = kDimMinutes[selected];
+    }
+    mark_settings_changed();
+}
+
+static void settings_close_event_handler(lv_event_t *e)
+{
+    show_settings(false);
+}
+
+static void settings_defaults_event_handler(lv_event_t *e)
+{
+    settings_restore_defaults();
+    apply_settings();
+    mark_settings_changed();
+}
+
+static lv_obj_t *create_settings_row_label(const char *name, int y)
+{
+    lv_obj_t *label = lv_label_create(settings_panel);
+    lv_obj_add_style(label, &style_info_label, 0);
+    lv_label_set_text(label, name);
+    lv_obj_set_pos(label, 10, y);
+    return label;
+}
+
+static lv_obj_t *create_settings_slider(const char *name, int y, int min, int max, lv_obj_t **value_label)
+{
+    create_settings_row_label(name, y);
+
+    lv_obj_t *slider = lv_slider_create(settings_panel);
+    lv_obj_set_pos(slider, 104, y + 4);
+    lv_obj_set_size(slider, 156, 10);
+    lv_obj_set_ext_click_area(slider, 12);
+    lv_slider_set_range(slider, min, max);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x3A5F5F), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x58A4B0), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0xBEE3DB), LV_PART_KNOB);
+    lv_obj_add_event_cb(slider, settings_slider_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
+
+    *value_label = lv_label_create(settings_panel);
+    lv_obj_add_style(*value_label, &style_state_label, 0);
+    lv_obj_set_pos(*value_label, 272, y);
+
+    return slider;
+}
+
+static lv_obj_t *create_settings_matrix(const char *name, int y, const char **map)
+{
+    create_settings_row_label(name, y + 8);
+
+    lv_obj_t *matrix = lv_btnmatrix_create(settings_panel);
+    lv_btnmatrix_set_map(matrix, map);
+    lv_btnmatrix_set_btn_ctrl_all(matrix, LV_BTNMATRIX_CTRL_CHECKABLE);
+    lv_btnmatrix_set_one_checked(matrix, true);
+    lv_obj_set_pos(matrix, 104, y);
+    lv_obj_set_size(matrix, 206, 34);
+    lv_obj_set_style_bg_opa(matrix, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(matrix, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(matrix, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_gap(matrix, 4, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(matrix, lv_color_hex(0x3A5F5F), LV_PART_ITEMS);
+    lv_obj_set_style_text_color(matrix, lv_color_hex(0xF2F7F7), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(matrix, lv_color_hex(0x1F7A8C), (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(matrix, settings_matrix_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
+
+    return matrix;
+}
+
+// Lives on the top layer so it also opens over the BLE overlay
+static void create_settings_panel()
+{
+    settings_panel = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(settings_panel, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_set_pos(settings_panel, 0, DISPLAY_HEIGHT);
+    lv_obj_set_style_pad_all(settings_panel, 0, 0);
+    lv_obj_set_style_border_width(settings_panel, 0, 0);
+    lv_obj_set_style_radius(settings_panel, 0, 0);
+    lv_obj_set_style_bg_color(settings_panel, lv_color_hex(0x1A2A2A), 0);
+    lv_obj_set_style_bg_grad_color(settings_panel, lv_color_hex(0x264D4D), 0);
+    lv_obj_set_style_bg_grad_dir(settings_panel, LV_GRAD_DIR_VER, 0);
+    lv_obj_clear_flag(settings_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(settings_panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_flag(settings_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(settings_panel, settings_gesture_handler, LV_EVENT_GESTURE, NULL);
+
+    lv_obj_t *title = lv_label_create(settings_panel);
+    lv_obj_add_style(title, &style_gate_label, 0);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_pos(title, 10, 6);
+
+    lv_obj_t *close_button = lv_btn_create(settings_panel);
+    lv_obj_add_style(close_button, &style_gate_btn, 0);
+    lv_obj_set_pos(close_button, DISPLAY_WIDTH - 54, 6);
+    lv_obj_set_size(close_button, 44, 32);
+    lv_obj_add_event_cb(close_button, settings_close_event_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *close_label = lv_label_create(close_button);
+    lv_obj_add_style(close_label, &style_info_label, 0);
+    lv_label_set_text(close_label, LV_SYMBOL_CLOSE);
+    lv_obj_center(close_label);
+
+    speed_slider = create_settings_slider("Speed", 50, MIN_SPEED_PERCENT, 100, &speed_value_label);
+    brightness_slider = create_settings_slider("Brightness", 82, MIN_BRIGHTNESS, 255, &brightness_value_label);
+    page_mode_matrix = create_settings_matrix("Pages", 110, kPageModeMap);
+    dim_matrix = create_settings_matrix("Dim after", 150, kDimMap);
+
+    lv_obj_t *defaults_button = lv_btn_create(settings_panel);
+    lv_obj_add_style(defaults_button, &style_reset_btn, 0);
+    lv_obj_set_pos(defaults_button, 10, 194);
+    lv_obj_set_size(defaults_button, 170, 36);
+    lv_obj_add_event_cb(defaults_button, settings_defaults_event_handler, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *defaults_label = lv_label_create(defaults_button);
+    lv_obj_add_style(defaults_label, &style_info_label, 0);
+    lv_label_set_text(defaults_label, "Restore defaults");
+    lv_obj_center(defaults_label);
+
+    lv_obj_t *version_label = lv_label_create(settings_panel);
+    lv_obj_add_style(version_label, &style_info_label, 0);
+    lv_label_set_text(version_label, "v" VERSIONSTR);
+    lv_obj_align(version_label, LV_ALIGN_BOTTOM_RIGHT, -10, -18);
+}
+
+static void settings_set_y_cb(void *obj, int32_t y)
+{
+    lv_obj_set_y((lv_obj_t *)obj, y);
+}
+
+static void settings_hidden_cb(lv_anim_t *a)
+{
+    lv_obj_add_flag(settings_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void show_settings(bool open)
+{
+    lv_obj_clear_flag(settings_panel, LV_OBJ_FLAG_HIDDEN);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, settings_panel);
+    lv_anim_set_exec_cb(&a, settings_set_y_cb);
+    lv_anim_set_values(&a, lv_obj_get_y(settings_panel), open ? 0 : DISPLAY_HEIGHT);
+    lv_anim_set_time(&a, kSettingsAnimMs);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    if (!open)
+    {
+        lv_anim_set_ready_cb(&a, settings_hidden_cb);
+    }
+    lv_anim_start(&a);
+}
+
+static void apply_settings()
+{
+    bloch.setSpeedPercent(settings.speed_percent);
+    gui_set_brightness(settings.brightness);
+    apply_page_mode();
+    update_settings_widgets();
+}
+
+static void apply_page_mode()
+{
+    const bool flip = settings.flip_pages;
+
+    if (flip)
+    {
+        lv_obj_clear_flag(tileview, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(prev_page_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(next_page_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(hint_label, "Tap the bars for pages   " LV_SYMBOL_UP " settings");
+    }
+    else
+    {
+        lv_obj_add_flag(tileview, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(prev_page_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(next_page_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(hint_label, "Swipe " LV_SYMBOL_LEFT " " LV_SYMBOL_RIGHT " pages   " LV_SYMBOL_UP " settings");
+    }
+
+    // Keep the real pages clear of the bars; the copies are only seen when swiping
+    const int area_x = flip ? bar_w + gap : left_x;
+    const int area_w = flip ? grid_w - 2 * area_x : grid_w;
+    for (int i = 0; i < kTotalButtons; ++i)
+    {
+        place_gate_button(gate_buttons[i], i, area_x, area_w);
+    }
+    lv_obj_set_width(reset_button, flip ? area_w : grid_w - 8);
+}
+
+static void update_settings_widgets()
+{
+    lv_slider_set_value(speed_slider, settings.speed_percent, LV_ANIM_OFF);
+    lv_slider_set_value(brightness_slider, settings.brightness, LV_ANIM_OFF);
+    update_value_labels();
+
+    lv_btnmatrix_set_btn_ctrl(page_mode_matrix, settings.flip_pages ? 1 : 0, LV_BTNMATRIX_CTRL_CHECKED);
+
+    int dim_index = 0;
+    for (size_t i = 0; i < sizeof(kDimMinutes); ++i)
+    {
+        if (kDimMinutes[i] == settings.dim_minutes)
+        {
+            dim_index = i;
+        }
+    }
+    lv_btnmatrix_set_btn_ctrl(dim_matrix, dim_index, LV_BTNMATRIX_CTRL_CHECKED);
+}
+
+static void update_value_labels()
+{
+    lv_label_set_text_fmt(speed_value_label, "%d%%", (int)lv_slider_get_value(speed_slider));
+    lv_label_set_text_fmt(brightness_value_label, "%d%%", (int)lv_slider_get_value(brightness_slider) * 100 / 255);
+}
+
+// Saved later from gui_loop(), once the motors are idle
+static void mark_settings_changed()
+{
+    settings_dirty = true;
+    settings_changed_time = millis();
+}
+
+static void update_screen_dim()
+{
+    const uint32_t timeout_ms = settings.dim_minutes * 60000UL;
+    const bool dim = timeout_ms > 0 && lv_disp_get_inactive_time(NULL) > timeout_ms && !bloch.isBusy();
+    if (dim == screen_dimmed)
+    {
+        return;
+    }
+
+    if (!dim)
+    {
+        // The touch that wakes the display must not also press a button
+        lv_indev_wait_release(lv_indev_get_next(NULL));
+    }
+    screen_dimmed = dim;
+    apply_backlight();
+}
+
+static void apply_backlight()
+{
+    const bool use_dim = screen_dimmed && current_brightness > DIM_BRIGHTNESS;
+    _lgfx.setBrightness(use_dim ? DIM_BRIGHTNESS : current_brightness);
 }
 
 static void gate_event_handler(lv_event_t *e)
@@ -405,5 +798,12 @@ void gui_reset_screen_color()
 
 void gui_set_brightness(uint8_t brightness)
 {
-    _lgfx.setBrightness(brightness);
+    current_brightness = brightness;
+    apply_backlight();
+
+    if (brightness_slider != NULL)
+    {
+        lv_slider_set_value(brightness_slider, brightness, LV_ANIM_OFF);
+        update_value_labels();
+    }
 }

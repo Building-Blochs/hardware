@@ -94,6 +94,11 @@ Vector3d BlochSphere::getState() const
     return _bloch_state;
 }
 
+void BlochSphere::setSpeedPercent(int percent)
+{
+    _speed_scale = percent / 100.0f;
+}
+
 bool BlochSphere::isBusy() const
 {
     return !_queue.empty() || _state == MOVE_START || _state == MOVE_BUSY || _state == MOVE_END;
@@ -102,7 +107,7 @@ bool BlochSphere::isBusy() const
 void BlochSphere::loop()
 {
     Vector3d move;
-    float max_move;
+    float max_move, max_speed, max_accel;
 
     static state_t _prvstate = _NONE;
     if (_state != _prvstate)
@@ -140,14 +145,16 @@ void BlochSphere::loop()
         // Scale each motor's speed and acceleration proportionally to its
         // share of the total move, so all three finish simultaneously.
         max_move = max(max(abs(move[0]), abs(move[1])), abs(move[2]));
+        max_speed = MOTORS_MAX_SPEED * _speed_scale;
+        max_accel = MOTORS_MAX_ACCEL * _speed_scale;
 
-        _motor1.setAcceleration(abs(move[2]) / max_move * MOTORS_MAX_ACCEL);
-        _motor2.setAcceleration(abs(move[1]) / max_move * MOTORS_MAX_ACCEL);
-        _motor3.setAcceleration(abs(move[0]) / max_move * MOTORS_MAX_ACCEL);
+        _motor1.setAcceleration(abs(move[2]) / max_move * max_accel);
+        _motor2.setAcceleration(abs(move[1]) / max_move * max_accel);
+        _motor3.setAcceleration(abs(move[0]) / max_move * max_accel);
 
-        _motor1.setMaxSpeed(abs(move[2]) / max_move * MOTORS_MAX_SPEED);
-        _motor2.setMaxSpeed(abs(move[1]) / max_move * MOTORS_MAX_SPEED);
-        _motor3.setMaxSpeed(abs(move[0]) / max_move * MOTORS_MAX_SPEED);
+        _motor1.setMaxSpeed(abs(move[2]) / max_move * max_speed);
+        _motor2.setMaxSpeed(abs(move[1]) / max_move * max_speed);
+        _motor3.setMaxSpeed(abs(move[0]) / max_move * max_speed);
 
         DBG("%lu: Move (%.0f, %.0f, %.0f) (max=%.0f)", millis(), move[0], move[1], move[2], max_move);
         _motor1.move(move[2]);
