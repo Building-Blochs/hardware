@@ -1,6 +1,7 @@
 #include "lgfx.h"
 
 #include "config.h"
+#include "i2c_bus.h"
 
 #include <LovyanGFX.hpp>
 #include <lvgl.h>
@@ -97,8 +98,12 @@ static void lv_touchpad_cb(lv_indev_drv_t *indev, lv_indev_data_t *data)
 {
     uint16_t touchX, touchY;
 
+    i2c_bus_lock();
+    const bool touched = _lgfx.getTouch(&touchX, &touchY);
+    i2c_bus_unlock();
+
     // If screen is not being touched, tell LVGL it is released
-    if (!_lgfx.getTouch(&touchX, &touchY))
+    if (!touched)
     {
         data->state = LV_INDEV_STATE_RELEASED;
         return;

@@ -2,6 +2,7 @@
 #include "bloch.h"
 #include "calibration.h"
 #include "config.h" // For DISPLAY_WIDTH, DISPLAY_HEIGHT
+#include "i2c_bus.h"
 #include "lgfx.h"
 #include "receiver.h"
 #include "settings.h"
@@ -831,7 +832,9 @@ static void update_screen_dim()
 static void apply_backlight()
 {
     const bool use_dim = screen_dimmed && current_brightness > DIM_BRIGHTNESS;
+    i2c_bus_lock();
     _lgfx.setBrightness(use_dim ? DIM_BRIGHTNESS : current_brightness);
+    i2c_bus_unlock();
 }
 
 static void gate_event_handler(lv_event_t *e)

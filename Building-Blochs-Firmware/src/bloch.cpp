@@ -3,11 +3,17 @@
 #include <stdlib.h>
 
 #include "config.h"
+#include "i2c_bus.h"
 #include "log.h"
 #include "m5stack-data.h"
 #include "bloch_math.h"
 
 using namespace Eigen;
+
+// Stepper driver register holding one reset line per motor, set = running
+static const uint8_t kDriverResetReg = 0x05;
+static const uint8_t kDriverResetRelease = 0x07;
+static const int kDriverResetAttempts = 3;
 
 static void printMatrix3d(const Eigen::Matrix3d &m, const char *name = "M");
 
@@ -52,6 +58,42 @@ bool BlochSphere::begin()
     _state = RESET;
 
     return true;
+}
+
+void BlochSphere::_enableMotors(bool enable)
+{
+    i2c_bus_lock();
+    _driver.enableMotor(enable ? 1 : 0);
+    i2c_bus_unlock();
+}
+
+// One write instead of Module_Stepmotor::resetMotor() per motor: that does a
+// read-modify-write, so a failed read clears the bits of the other motors and
+// leaves them dead until the next reset, with no error.
+void BlochSphere::_releaseMotorResets()
+{
+    uint8_t value = 0;
+    for (int attempt = 0; attempt < kDriverResetAttempts; ++attempt)
+    {
+        i2c_bus_lock();
+        Wire1.beginTransmission(_driver._addr);
+        Wire1.write(kDriverResetReg);
+        Wire1.write(kDriverResetRelease);
+        const uint8_t write_error = Wire1.endTransmission();
+
+        Wire1.beginTransmission(_driver._addr);
+        Wire1.write(kDriverResetReg);
+        const uint8_t select_error = Wire1.endTransmission();
+        const bool read_ok = select_error == 0 && Wire1.requestFrom((int)_driver._addr, 1) == 1;
+        value = read_ok ? Wire1.read() : 0;
+        i2c_bus_unlock();
+
+        if (write_error == 0 && read_ok && (value & kDriverResetRelease) == kDriverResetRelease)
+        {
+            return;
+        }
+    }
+    WARNING("Motor reset lines not released, register reads 0x%02x", value);
 }
 
 void BlochSphere::reset()
@@ -132,10 +174,8 @@ void BlochSphere::loop()
     {
     case _NONE:
     case RESET:
-        _driver.enableMotor(0);
-        _driver.resetMotor(0, 0);
-        _driver.resetMotor(1, 0);
-        _driver.resetMotor(2, 0);
+        _enableMotors(false);
+        _releaseMotorResets();
         _state = IDLE;
         break;
 
@@ -152,7 +192,7 @@ void BlochSphere::loop()
         _queue.pop();
         xSemaphoreGive(_queue_mutex);
 
-        _driver.enableMotor(1);
+        _enableMotors(true);
 
         // Scale each motor's speed and acceleration proportionally to its
         // share of the total move, so all three finish simultaneously.
@@ -189,7 +229,7 @@ void BlochSphere::loop()
         break;
 
     case MOVE_END:
-        _driver.enableMotor(0);
+        _enableMotors(false);
         _state = _queue.empty() ? IDLE : MOVE_START;
         break;
     }

@@ -53,6 +53,8 @@ public:
 
 private:
     void _queueMotion(const Vector3d motion);
+    void _enableMotors(bool enable);
+    void _releaseMotorResets();
 
     typedef enum
     {
