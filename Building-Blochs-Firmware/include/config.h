@@ -1,10 +1,6 @@
 #ifndef __CONFIG_H
 #define __CONFIG_H
 
-// Firmware version (MAJOR.MINOR.PATCH), shown on the RESET screen.
-// Bump for every release and tag the commit as v<version>.
-#define VERSIONSTR "1.1.0"
-
 #define MOTOR_ANGLE_DEG         30
 #define BASE_Z_ROTATION_DEG     30
 

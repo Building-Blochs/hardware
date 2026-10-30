@@ -5,6 +5,7 @@
 #include "lgfx.h"
 #include "receiver.h"
 #include "settings.h"
+#include "version.h"
 
 extern BlochSphere bloch; // main.cpp
 
@@ -21,6 +22,7 @@ static lv_obj_t *tile_copy_of_1;
 
 static lv_obj_t *gate_buttons[8]; // Expanded to 8 buttons
 static lv_obj_t *reset_button;
+static lv_obj_t *version_label;
 static lv_obj_t *prev_page_bar;
 static lv_obj_t *next_page_bar;
 static lv_obj_t *hint_label;
@@ -111,6 +113,7 @@ static void reset_event_handler(lv_event_t *e);
 static void update_state_label();
 static lv_obj_t *create_gate_button(lv_obj_t *parent, int gate);
 static lv_obj_t *create_reset_page(lv_obj_t *parent);
+static lv_obj_t *create_version_label(lv_obj_t *parent);
 static void place_gate_button(lv_obj_t *btn, int gate, int area_x, int area_w);
 static void gui_wrap_tiles();
 static lv_obj_t *create_page_bar(lv_align_t align, const char *symbol, int step);
@@ -212,6 +215,7 @@ void gui_begin()
     }
 
     reset_button = create_reset_page(tile3);
+    version_label = create_version_label(tile3);
     lv_obj_add_event_cb(reset_button, reset_event_handler, LV_EVENT_CLICKED, NULL);
 
     for (int i = 0; i < 4; ++i)
@@ -219,6 +223,7 @@ void gui_begin()
         lv_obj_clear_flag(create_gate_button(tile_copy_of_1, i), LV_OBJ_FLAG_CLICKABLE);
     }
     lv_obj_clear_flag(create_reset_page(tile_copy_of_3), LV_OBJ_FLAG_CLICKABLE);
+    create_version_label(tile_copy_of_3);
 
     lv_obj_set_tile(tileview, tile1, LV_ANIM_OFF);
 
@@ -398,13 +403,17 @@ static lv_obj_t *create_reset_page(lv_obj_t *parent)
     lv_label_set_text(label, "RESET");
     lv_obj_center(label);
 
-    // Same baseline as state_label; short enough to stay left of it
-    lv_obj_t *version_label = lv_label_create(parent);
-    lv_obj_add_style(version_label, &style_info_label, 0);
-    lv_label_set_text(version_label, "v" VERSIONSTR);
-    lv_obj_align(version_label, LV_ALIGN_BOTTOM_LEFT, 4, -2);
-
     return btn;
+}
+
+// Sits just above state_label: a git version is too wide to share its row
+static lv_obj_t *create_version_label(lv_obj_t *parent)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    lv_obj_add_style(label, &style_info_label, 0);
+    lv_label_set_text(label, VERSIONSTR);
+    lv_obj_align(label, LV_ALIGN_BOTTOM_LEFT, left_x, -22);
+    return label;
 }
 
 // Once a swipe has settled on a copy, jump to the real page it mirrors
@@ -695,10 +704,10 @@ static void create_settings_panel()
     lv_label_set_text(defaults_label, "Restore defaults");
     lv_obj_center(defaults_label);
 
-    lv_obj_t *version_label = lv_label_create(settings_panel);
-    lv_obj_add_style(version_label, &style_info_label, 0);
-    lv_label_set_text(version_label, "v" VERSIONSTR);
-    lv_obj_align(version_label, LV_ALIGN_TOP_RIGHT, -64, 14);
+    lv_obj_t *settings_version_label = lv_label_create(settings_panel);
+    lv_obj_add_style(settings_version_label, &style_info_label, 0);
+    lv_label_set_text(settings_version_label, VERSIONSTR);
+    lv_obj_align(settings_version_label, LV_ALIGN_TOP_RIGHT, -64, 14);
 }
 
 static void settings_set_y_cb(void *obj, int32_t y)
@@ -765,6 +774,7 @@ static void apply_page_mode()
         place_gate_button(gate_buttons[i], i, area_x, area_w);
     }
     lv_obj_set_width(reset_button, flip ? area_w : grid_w - 8);
+    lv_obj_align(version_label, LV_ALIGN_BOTTOM_LEFT, area_x, -22);
 }
 
 static void update_settings_widgets()
