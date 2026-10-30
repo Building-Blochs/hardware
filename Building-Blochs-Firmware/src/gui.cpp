@@ -17,6 +17,7 @@ static lv_obj_t *gate_buttons[8]; // Expanded to 8 buttons
 static lv_obj_t *gate_labels[8];
 static lv_obj_t *reset_button;
 static lv_obj_t *reset_label;
+static lv_obj_t *version_label;
 static lv_obj_t *hint_label;
 static lv_obj_t *state_label;
 
@@ -179,6 +180,12 @@ void gui_begin()
     lv_obj_add_style(reset_label, &style_reset_label, 0);
     lv_label_set_text(reset_label, "RESET");
     lv_obj_center(reset_label);
+
+    // Same baseline as state_label; short enough to stay left of it
+    version_label = lv_label_create(tile3);
+    lv_obj_add_style(version_label, &style_info_label, 0);
+    lv_label_set_text(version_label, "v" VERSIONSTR);
+    lv_obj_align(version_label, LV_ALIGN_BOTTOM_LEFT, 4, -2);
 
     update_state_label();
 
