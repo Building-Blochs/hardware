@@ -70,6 +70,13 @@ static bool machine_name_dirty = false;
 static bool defaults_armed = false;
 static unsigned long defaults_armed_time = 0;
 
+static constexpr char kWanderCode[] = "HZXY" "XHYZ" "ZYHX" "YHZX" "HYXZ" "XZHY" "YZHX" "ZXYH";
+static_assert(sizeof(kWanderCode) == 33, "Wander code must be 32 taps");
+static constexpr unsigned long kWanderTapTimeoutMs = 10000;
+static char wander_taps[sizeof(kWanderCode) - 1];
+static size_t wander_tap_count = 0;
+static unsigned long last_wander_tap = 0;
+
 typedef struct
 {
     const char *label;
@@ -538,6 +545,8 @@ static void machine_number_event_handler(lv_event_t *e)
 
 static void calibrate_event_handler(lv_event_t *e)
 {
+    wander_tap_count = 0;
+    bloch.stopWander();
     show_settings(false);
     calibration_start();
 }
@@ -837,6 +846,28 @@ static void apply_backlight()
     i2c_bus_unlock();
 }
 
+static bool match_wander_code(const char *label)
+{
+    const unsigned long now = millis();
+    if (now - last_wander_tap >= kWanderTapTimeoutMs || label[1] != '\0')
+        wander_tap_count = 0;
+    if (label[1] != '\0') return false;
+
+    last_wander_tap = now;
+    if (wander_tap_count == sizeof(wander_taps))
+    {
+        memmove(wander_taps, wander_taps + 1, sizeof(wander_taps) - 1);
+        --wander_tap_count;
+    }
+    wander_taps[wander_tap_count++] = label[0];
+    if (wander_tap_count != sizeof(wander_taps) ||
+        memcmp(wander_taps, kWanderCode, sizeof(wander_taps)) != 0)
+        return false;
+
+    wander_tap_count = 0;
+    return true;
+}
+
 static void gate_event_handler(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED)
@@ -849,7 +880,9 @@ static void gate_event_handler(lv_event_t *e)
     {
         if (target == gate_buttons[i])
         {
+            if (bloch.stopWander()) return;
             receiver_apply_permute(kGates[i].permute);
+            if (match_wander_code(kGates[i].label)) bloch.startWander();
             update_state_label();
             return;
         }
@@ -863,6 +896,7 @@ static void reset_event_handler(lv_event_t *e)
         return;
     }
 
+    wander_tap_count = 0;
     receiver_reset_bloch();
     update_state_label();
 }

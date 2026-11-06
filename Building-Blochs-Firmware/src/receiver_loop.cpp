@@ -4,7 +4,6 @@
 #include "bloch.h"
 #include "calibration.h"
 #include "config.h"
-#include "quat_tracker.h"
 #include "settings.h"
 
 #include <Arduino.h>
@@ -49,17 +48,9 @@ namespace
     };
 } // namespace
 
-// ---------------------------------------------------------------------------
-// Net-rotation tracker — lets receiver_reset_bloch() undo all moves in one
-// shortest-path rotation.
-// ---------------------------------------------------------------------------
-static QuatTracker netRotation;
-
-// Execute a rotation and record it in the tracker.
 static void executeRotation(Vector3d axis, double turns)
 {
     bloch.rotate(axis, static_cast<int>(STEPS_PER_ROTATION * turns));
-    netRotation.applyRotation(axis.data(), turns);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,21 +122,12 @@ bool receiver_apply_permute(const BlochSphere::permute_t permute)
 
 void receiver_reset_bloch()
 {
-    double resetAxis[3];
-    double resetTurns = 0.0;
-    netRotation.calculateReset(resetAxis, resetTurns);
-
-    if (resetTurns > 0.001)
-        bloch.rotate(Vector3d(resetAxis[0], resetAxis[1], resetAxis[2]),
-                     static_cast<int>(STEPS_PER_ROTATION * resetTurns));
+    bloch.resetToNorth();
 }
 
 // Forget all tracked rotations: the sphere is now at |0⟩ by definition.
 void receiver_home()
 {
-    double dummy_axis[3];
-    double dummy_turns = 0.0;
-    netRotation.calculateReset(dummy_axis, dummy_turns);
     bloch.reset();
 }
 

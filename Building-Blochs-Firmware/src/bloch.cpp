@@ -1,6 +1,8 @@
 #include "bloch.h"
 
 #include <stdlib.h>
+#include <esp_system.h>
+#include <freertos/task.h>
 
 #include "config.h"
 #include "i2c_bus.h"
@@ -14,17 +16,18 @@ using namespace Eigen;
 static const uint8_t kDriverResetReg = 0x05;
 static const uint8_t kDriverResetRelease = 0x07;
 static const int kDriverResetAttempts = 3;
+static constexpr double kWanderTurnsPerSecond = 12.0 / 360.0;
+static constexpr uint32_t kWanderSteeringMs = 40;
 
 static void printMatrix3d(const Eigen::Matrix3d &m, const char *name = "M");
 
 BlochSphere::BlochSphere()
-    : _motor1(AccelStepper::DRIVER, M5_STEPMOTORDRIVER_STP_X, M5_STEPMOTORDRIVER_DIR_X),
+    : _queue_mutex(xSemaphoreCreateMutex()),
+      _motor1(AccelStepper::DRIVER, M5_STEPMOTORDRIVER_STP_X, M5_STEPMOTORDRIVER_DIR_X),
       _motor2(AccelStepper::DRIVER, M5_STEPMOTORDRIVER_STP_Y, M5_STEPMOTORDRIVER_DIR_Y),
       _motor3(AccelStepper::DRIVER, M5_STEPMOTORDRIVER_STP_Z, M5_STEPMOTORDRIVER_DIR_Z),
-      _bloch_state(0, 0, 1),
-      _queue_mutex(nullptr)
+      _bloch_state(0, 0, 1)
 {
-    _queue_mutex = xSemaphoreCreateMutex();
 }
 
 BlochSphere::~BlochSphere() {}
@@ -99,9 +102,10 @@ void BlochSphere::_releaseMotorResets()
 
 void BlochSphere::reset()
 {
-    _bloch_state = Vector3d(0, 0, 1);
-
+    stopWander();
     xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+    _bloch_state = Vector3d(0, 0, 1);
+    _net_rotation = {};
     MovementQueue_t empty;
     _queue.swap(empty);
     xSemaphoreGive(_queue_mutex);
@@ -111,42 +115,71 @@ void BlochSphere::reset()
 
 bool BlochSphere::rotate(const Vector3d axis, const int steps)
 {
-    DBG("Queue move");
-
-    // Update the software Bloch vector via Rodrigues' rotation formula.
-    const Vector3d k = axis.normalized();
-    const double theta = (2.0 * PI * static_cast<double>(steps)) / static_cast<double>(STEPS_PER_ROTATION);
-    const double c = cos(theta);
-    const double s = sin(theta);
-    const Vector3d v = _bloch_state;
-    _bloch_state = (v * c) + (k.cross(v) * s) + (k * k.dot(v) * (1.0 - c));
-    _bloch_state.normalize();
-
-    _queueMotion(k * steps);
+    stopWander();
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+    _rotate(axis, steps);
+    xSemaphoreGive(_queue_mutex);
     return true;
+}
+
+void BlochSphere::resetToNorth()
+{
+    stopWander();
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+    Vector3d axis;
+    double turns;
+    _net_rotation.calculateReset(axis.data(), turns);
+    if (turns > 0.001)
+    {
+        _rotate(axis, static_cast<int>(STEPS_PER_ROTATION * turns));
+        _net_rotation = {};
+    }
+    xSemaphoreGive(_queue_mutex);
+}
+
+// Called with the queue mutex held.
+void BlochSphere::_rotate(const Vector3d &axis, int steps)
+{
+    const Vector3d k = axis.normalized();
+    _trackRotation(k, static_cast<double>(steps) / STEPS_PER_ROTATION);
+    _queueMotion(k * steps);
+}
+
+void BlochSphere::_trackRotation(const Vector3d &axis, double turns)
+{
+    Vector3d state;
+    rodrigues_rotate(_bloch_state.data(), axis.data(), 2.0 * PI * turns, state.data());
+    _bloch_state = state.normalized();
+    _net_rotation.applyRotation(axis.data(), turns);
 }
 
 void BlochSphere::moveUntracked(const Vector3d axis, double degrees)
 {
+    stopWander();
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
     _queueMotion(axis.normalized() * (degrees / 360.0 * STEPS_PER_ROTATION));
+    xSemaphoreGive(_queue_mutex);
 }
 
 void BlochSphere::setRotationCorrection(double x, double y, double z)
 {
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
     _correction = Vector3d(x, y, z);
+    xSemaphoreGive(_queue_mutex);
 }
 
 void BlochSphere::_queueMotion(const Vector3d motion)
 {
-    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
     // Compensate for the measured under-rotation about each axis.
     _queue.push(_motormatrix * motion.cwiseProduct(_correction));
-    xSemaphoreGive(_queue_mutex);
 }
 
 Vector3d BlochSphere::getState() const
 {
-    return _bloch_state;
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+    const Vector3d state = _bloch_state;
+    xSemaphoreGive(_queue_mutex);
+    return state;
 }
 
 void BlochSphere::setSpeedPercent(int percent)
@@ -156,7 +189,99 @@ void BlochSphere::setSpeedPercent(int percent)
 
 bool BlochSphere::isBusy() const
 {
-    return !_queue.empty() || _state == MOVE_START || _state == MOVE_BUSY || _state == MOVE_END;
+    if (_state >= MOVE_START || _wander_requested) return true;
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+    const bool busy = !_queue.empty() || _state >= MOVE_START || _wander_requested;
+    xSemaphoreGive(_queue_mutex);
+    return busy;
+}
+
+void BlochSphere::startWander()
+{
+    _wander_requested = true;
+}
+
+bool BlochSphere::stopWander()
+{
+    // Serialize cancellation with the motor task's transition into WANDER.
+    xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+    const bool was_requested = _wander_requested.exchange(false);
+    xSemaphoreGive(_queue_mutex);
+
+    // Record the last pulses before queuing a gate or reset.
+    while (_state == WANDER) vTaskDelay(1);
+    return was_requested;
+}
+
+// Called with the queue mutex held.
+void BlochSphere::_beginWander()
+{
+    _wander_to_motors = _motormatrix * _correction.asDiagonal();
+    _wander_from_motors = _wander_to_motors.inverse();
+    const double heading = 2.0 * PI * esp_random() / 4294967296.0;
+    _wander_axis = AngleAxisd(heading, _bloch_state) * _bloch_state.unitOrthogonal();
+    _wander_turn = 0;
+    _wander_last_steps = Vector3d(_motor3.currentPosition(), _motor2.currentPosition(), _motor1.currentPosition());
+    _wander_last_update = millis();
+    _motor1.setMaxSpeed(MOTORS_MAX_SPEED);
+    _motor2.setMaxSpeed(MOTORS_MAX_SPEED);
+    _motor3.setMaxSpeed(MOTORS_MAX_SPEED);
+    _steerWander();
+}
+
+void BlochSphere::_trackWander()
+{
+    // Use emitted motor steps so Reset accounts for timing jitter and rounding.
+    const Vector3d steps(_motor3.currentPosition(), _motor2.currentPosition(), _motor1.currentPosition());
+    const Vector3d motion = _wander_from_motors * (steps - _wander_last_steps);
+    _wander_last_steps = steps;
+    const double length = motion.norm();
+    if (length > 0) _trackRotation(motion / length, length / STEPS_PER_ROTATION);
+}
+
+void BlochSphere::_steerWander()
+{
+    // A tangent rotation axis keeps the arrow's surface speed fixed. Filter
+    // the random changes so consecutive directions stay close together.
+    const double noise = 2.0 * esp_random() / 4294967296.0 - 1.0;
+    _wander_turn = 0.88 * _wander_turn + 0.12 * (0.035 * noise);
+    _wander_axis = (_wander_axis - _bloch_state * _bloch_state.dot(_wander_axis)).normalized();
+    _wander_axis = AngleAxisd(_wander_turn, _bloch_state) * _wander_axis;
+    const Vector3d rates = _wander_to_motors * _wander_axis * (STEPS_PER_ROTATION * kWanderTurnsPerSecond);
+    _motor1.setSpeed(rates[2]);
+    _motor2.setSpeed(rates[1]);
+    _motor3.setSpeed(rates[0]);
+}
+
+void BlochSphere::_runWander()
+{
+    if (!_wander_requested)
+    {
+        xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+        _trackWander();
+        xSemaphoreGive(_queue_mutex);
+        // Clear AccelStepper's old targets and its continuous speed.
+        _motor1.setCurrentPosition(0);
+        _motor2.setCurrentPosition(0);
+        _motor3.setCurrentPosition(0);
+        _enableMotors(false);
+        _state = IDLE;
+        return;
+    }
+
+    _motor1.runSpeed();
+    _motor2.runSpeed();
+    _motor3.runSpeed();
+    const uint32_t now = millis();
+    if (now - _wander_last_update >= kWanderSteeringMs)
+    {
+        xSemaphoreTake(_queue_mutex, portMAX_DELAY);
+        _trackWander();
+        _steerWander();
+        xSemaphoreGive(_queue_mutex);
+        _wander_last_update = now;
+        vTaskDelay(1);  // Let the idle task run during continuous motion.
+    }
 }
 
 void BlochSphere::loop()
@@ -182,8 +307,17 @@ void BlochSphere::loop()
 
     case IDLE:
         xSemaphoreTake(_queue_mutex, portMAX_DELAY);
-        if (!_queue.empty()) _state = MOVE_START;
+        if (!_queue.empty())
+        {
+            _state = MOVE_START;
+        }
+        else if (_wander_requested)
+        {
+            _beginWander();
+            _state = WANDER;
+        }
         xSemaphoreGive(_queue_mutex);
+        if (_state == WANDER) _enableMotors(true);
         return;
 
     case MOVE_START:
@@ -231,7 +365,11 @@ void BlochSphere::loop()
 
     case MOVE_END:
         _enableMotors(false);
-        _state = _queue.empty() ? IDLE : MOVE_START;
+        _state = IDLE;
+        break;
+
+    case WANDER:
+        _runWander();
         break;
     }
 }

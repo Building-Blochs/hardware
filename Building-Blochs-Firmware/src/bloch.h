@@ -5,9 +5,11 @@
 #include <ArduinoEigenDense.h>
 #include <AccelStepper.h>
 #include <Module_Stepmotor.h>
+#include <atomic>
 #include <queue>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include "quat_tracker.h"
 
 using namespace Eigen;
 
@@ -33,8 +35,11 @@ public:
     bool begin();
     void loop();
     void reset();
+    void resetToNorth();
 
     bool isBusy() const;
+    void startWander();
+    bool stopWander();
 
     // Motor speed and acceleration as a percentage of the maximum, used from the next move on.
     void setSpeedPercent(int percent);
@@ -52,6 +57,12 @@ public:
     Vector3d getState() const;
 
 private:
+    void _trackRotation(const Vector3d &axis, double turns);
+    void _rotate(const Vector3d &axis, int steps);
+    void _beginWander();
+    void _runWander();
+    void _trackWander();
+    void _steerWander();
     void _queueMotion(const Vector3d motion);
     void _enableMotors(bool enable);
     void _releaseMotorResets();
@@ -64,15 +75,23 @@ private:
         MOVE_START,
         MOVE_BUSY,
         MOVE_END,
+        WANDER,
     } state_t;
 
-    const char *StateNames[MOVE_END + 1] = {"<none>", "RESET", "IDLE", "START", "BUSY", "END"};
+    const char *StateNames[WANDER + 1] = {"<none>", "RESET", "IDLE", "START", "BUSY", "END", "WANDER"};
 
-    state_t _state = RESET;
+    std::atomic<state_t> _state{RESET};
 
     typedef std::queue<Vector3d> MovementQueue_t;
     MovementQueue_t _queue;
     SemaphoreHandle_t _queue_mutex;
+    std::atomic<bool> _wander_requested{false};
+    Matrix3d _wander_to_motors;
+    Matrix3d _wander_from_motors;
+    Vector3d _wander_axis;
+    Vector3d _wander_last_steps;
+    double _wander_turn = 0;
+    uint32_t _wander_last_update = 0;
 
     Module_Stepmotor _driver;
     AccelStepper _motor1;
@@ -87,8 +106,9 @@ private:
 
     Vector3d _correction = Vector3d(1, 1, 1);
 
-    // Software copy of the Bloch vector, updated on every rotate() call.
+    // Tracked orientation, protected by _queue_mutex.
     Vector3d _bloch_state;
+    QuatTracker _net_rotation;
 };
 
 #endif // __BLOCH_H
