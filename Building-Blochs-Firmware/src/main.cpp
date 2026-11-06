@@ -1,4 +1,18 @@
 #include <Arduino.h>
+#include "ble_update.h"
+#include <esp_ota_ops.h>
+#include <esp_timer.h>
+#include <atomic>
+
+// Defer Arduino's default early confirmation until our application is running.
+extern "C" bool verifyRollbackLater() { return true; }
+static esp_timer_handle_t bootDeadline;
+static bool pendingBoot = false;
+static bool motorReady = false;
+static uint32_t bootStarted;
+static std::atomic<uint32_t> stepperHeartbeat{0};
+static void bootExpired(void *) { ESP.restart(); }
+#include <Arduino.h>
 #include <AccelStepper.h>
 #include <ArduinoEigenDense.h>
 #include <freertos/FreeRTOS.h>
@@ -18,6 +32,7 @@ static void stepper_task(void *)
     for (;;)
     {
         bloch.loop();
+        stepperHeartbeat = millis();
         if (!bloch.isBusy())
             vTaskDelay(1);  // feed watchdog when idle
     }
@@ -44,10 +59,22 @@ void setup()
 {
     Serial.begin(115200);
 
+    esp_ota_img_states_t state;
+    pendingBoot = esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK
+        && state == ESP_OTA_IMG_PENDING_VERIFY;
+    bootStarted = millis();
+    if (pendingBoot) {
+        esp_timer_create_args_t args{};
+        args.callback = bootExpired;
+        args.name = "ota_boot_deadline";
+        if (esp_timer_create(&args, &bootDeadline) != ESP_OK ||
+            esp_timer_start_once(bootDeadline, 30000000) != ESP_OK)
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+    }
     settings_load();
     receiver_setup();
     gui_begin();
-    bloch.begin();
+    motorReady = bloch.begin();
 
     // Home the sphere to |0⟩ = (0, 0, 1) on startup.
     bloch.rotate(Eigen::Vector3d(0, 0, 1), STEPS_PER_ROTATION);
@@ -61,6 +88,21 @@ void setup()
 
 void loop()
 {
+    if (pendingBoot && millis()-bootStarted >= 10000) {
+        if (!motorReady || millis()-stepperHeartbeat.load() > 1000)
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+            pendingBoot = false;
+            esp_timer_stop(bootDeadline);
+            esp_timer_delete(bootDeadline);
+        }
+    }
+    ble_update_loop();
+    if (ble_update_active()) {
+        receiver_loop(); // discard any queued commands; keep UI/motion controls suspended
+        delay(1);
+        return;
+    }
     // Timing stays here to measure how long GUI/receiver block core 1.
     // The stepper itself is now immune to these delays (runs on core 0).
     uint32_t t0 = micros();

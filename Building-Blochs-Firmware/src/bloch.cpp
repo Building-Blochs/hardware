@@ -34,7 +34,8 @@ bool BlochSphere::begin()
     // Wire1 is used here because LovyanGFX configures the touch controller on Wire1
     // with the same pins. See https://github.com/lovyan03/LovyanGFX/issues/628
     Wire1.begin(M5_STEPMOTORDRIVER_SDA, M5_STEPMOTORDRIVER_SCL, 400000);
-    if (!_driver.init(Wire1))
+    const bool driverReady = _driver.init(Wire1);
+    if (!driverReady)
     {
         WARNING("_driver returned false. error?");
     }
@@ -57,7 +58,7 @@ bool BlochSphere::begin()
 
     _state = RESET;
 
-    return true;
+    return driverReady;
 }
 
 void BlochSphere::_enableMotors(bool enable)

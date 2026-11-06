@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Update your Bloch</title>
+<style>
+body{font:17px system-ui,sans-serif;background:#f1f5f9;color:#152238;max-width:640px;margin:8vh auto;padding:24px}main{background:white;padding:32px;border-radius:18px;box-shadow:0 8px 32px #15223812}h1{margin-top:0}button,input{font:inherit;margin:10px 0}button{padding:12px 20px;border:0;border-radius:8px;background:#185abd;color:white;cursor:pointer}button:disabled{opacity:.45;cursor:default}progress{width:100%;height:24px}#status{white-space:pre-wrap;line-height:1.5}small{display:block;color:#526277;line-height:1.6}
+</style>
+<main>
+<h1>Update your Bloch</h1>
+<p>Connect a nearby device, then select a signed firmware update.</p>
+<button id="connect">Connect device</button>
+<p id="device">No device connected</p>
+<label>Signed update (.bbu)<br><input id="file" type="file" accept=".bbu"></label>
+<p id="package"></p>
+<label><input id="compat" type="checkbox"> Slower compatibility mode (use if transfer fails)</label>
+<button id="update" disabled>Install update</button>
+<button id="cancel" disabled>Cancel</button>
+<progress id="progress" max="100" value="0"></progress>
+<p id="status" role="status" aria-live="polite">Keep the device powered and this page open during the update.</p>
+<small>Use Chrome or Edge on a Bluetooth-enabled PC. The device must be idle. After installation it restarts and performs its normal startup movement; keep the sphere clear. USB installation is required once to enable wireless updates.</small>
+</main>
+<script type="module">
+const serviceId='a0741000-7d16-4a22-b123-97fe36c04200';
+const uuid=n=>`a074100${n}-7d16-4a22-b123-97fe36c04200`;
+const $=id=>document.getElementById(id);
+const message=text=>$('status').textContent=text;
+let device,writer,status,bytes,busy=false,cancelled=false,finished=false;
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function controls(){ $('connect').disabled=busy; $('file').disabled=busy; $('compat').disabled=busy; $('update').disabled=busy||!writer||!bytes; $('cancel').disabled=!busy||finished; }
+const errors={3:'Device is moving or calibrating. Wait until it is idle.',4:'Update rejected: invalid signature, package, size, or checksum.',5:'Writing or activating the firmware failed.',6:'Unexpected update command.',7:'Update timed out.'};
+async function exchange(packet,expectedCode,expectedOffset){
+  await writer.writeValueWithResponse(packet);
+  const deadline=Date.now()+30000;
+  while(Date.now()<deadline){
+    const reply=await status.readValue();
+    const code=reply.getUint8(0), offset=reply.getUint32(1,true);
+    if(errors[code]) throw Error(errors[code]);
+    if(code===expectedCode&&(expectedOffset===undefined||offset===expectedOffset))return;
+    if(cancelled&&packet[0]!==3)throw Error('Cancelled.');
+    await sleep(20);
+  }
+  throw Error('Device did not acknowledge the update. Reconnect and try again.');
+}
+$('connect').onclick=async()=>{
+  try{
+    if(!navigator.bluetooth)throw Error('Web Bluetooth is unavailable. Open this HTTPS page in Chrome or Edge.');
+    if(device?.gatt.connected)device.gatt.disconnect();
+    device=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'Bloch-'}],optionalServices:[serviceId]});
+    device.addEventListener('gattserverdisconnected',()=>{
+      writer=null; controls();
+      $('device').textContent='Disconnected';
+      if(!finished)message('Device disconnected. If a transfer was interrupted, reconnect and start again.');
+    });
+    const server=await device.gatt.connect();
+    const service=await server.getPrimaryService(serviceId);
+    writer=await service.getCharacteristic(uuid(1));
+    status=await service.getCharacteristic(uuid(2));
+    const info=await (await service.getCharacteristic(uuid(3))).readValue();
+    $('device').textContent=`${device.name} — ${new TextDecoder().decode(info)}`;
+    finished=false;
+    message('Connected. Select a signed update to continue.');
+  }catch(error){writer=null;message(error.message+' If the update service is missing, install the initial firmware by USB.');}
+  controls();
+};
+$('file').onchange=async()=>{
+  bytes=null; controls();
+  try{
+    const file=$('file').files[0];
+    if(!file)return;
+    if(file.size>0x640000+300||file.size<=300)throw Error('Invalid update size.');
+    const candidate=new Uint8Array(await file.arrayBuffer());
+    if(new TextDecoder().decode(candidate.slice(0,8))!=='BBOTA001'||new DataView(candidate.buffer).getUint32(8,true)!==candidate.length-300)throw Error('Not a supported Bloch update package.');
+    const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',candidate.slice(300)));
+    if(!hash.every((v,i)=>v===candidate[12+i]))throw Error('Package is corrupted. Download it again.');
+    bytes=candidate;
+    $('package').textContent=`${file.name} — ${((bytes.length-300)/1048576).toFixed(2)} MB. The device verifies the publisher signature before writing.`;
+  }catch(error){message(error.message);}
+  controls();
+};
+$('cancel').onclick=()=>{cancelled=true;message('Cancelling…');};
+$('update').onclick=async()=>{
+  busy=true; cancelled=false; finished=false; controls();
+  try{
+    await exchange(new Uint8Array([1]),1,0);
+    // Compatibility mode fits the minimum ATT MTU. Each packet has a five-byte header.
+    for(let offset=0;offset<bytes.length;){
+      if(cancelled)throw Error('Cancelled.');
+      const boundary=offset<300?300:bytes.length;
+      const count=Math.min($('compat').checked?15:180,boundary-offset);
+      const packet=new Uint8Array(5+count);packet[0]=2;
+      new DataView(packet.buffer).setUint32(1,offset,true);
+      packet.set(bytes.subarray(offset,offset+count),5);
+      await exchange(packet,1,offset+count);
+      offset+=count;
+      const percent=Math.floor(offset/bytes.length*100);
+      $('progress').value=percent;
+      message(`Transferring: ${percent}%. Keep this page open and the device powered. Bluetooth transfer can take several minutes.`);
+    }
+    message('Verifying and activating update…');
+    await exchange(new Uint8Array([4]),2);
+    finished=true;
+    message('Update installed. The device is restarting. Reconnect to check its firmware version.');
+  }catch(error){
+    if(device?.gatt.connected){try{await exchange(new Uint8Array([3]),0);}catch{}}
+    message(error.message+' The update was not confirmed. Reconnect to check the device version before retrying.');
+  }finally{busy=false;controls();}
+};
+controls();
+</script>
+</html>

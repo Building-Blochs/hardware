@@ -1,3 +1,4 @@
+#include "ble_update.h"
 #include "receiver.h"
 #include "gui.h"
 #include "bloch.h"
@@ -33,13 +34,14 @@ namespace
     class MyServerCallbacks : public BLEServerCallbacks
     {
         void onConnect(BLEServer *) override { deviceConnected = true; }
-        void onDisconnect(BLEServer *) override { deviceConnected = false; }
+        void onDisconnect(BLEServer *) override { deviceConnected = false; ble_update_disconnect(); }
     };
 
     class MyCallbacks : public BLECharacteristicCallbacks
     {
         void onWrite(BLECharacteristic *pCharacteristic) override
         {
+            if (ble_update_active()) return;
             String rxValue = pCharacteristic->getValue().c_str();
             if (rxValue.length() > 0)
                 bleBuffer += rxValue;
@@ -72,6 +74,7 @@ static String machineName()
 void receiver_setup()
 {
     BLEDevice::init(machineName());
+    BLEDevice::setMTU(247);
 
     pServer = BLEDevice::createServer();
     pServer->setCallbacks(new MyServerCallbacks());
@@ -89,6 +92,7 @@ void receiver_setup()
     pRxCharacteristic->setCallbacks(new MyCallbacks());
 
     pService->start();
+    ble_update_setup(pServer);
     pServer->getAdvertising()->start();
 }
 
@@ -187,7 +191,7 @@ void receiver_loop()
     }
 
     // Moves from a client would invalidate the calibration measurement
-    if (calibration_active())
+    if (calibration_active() || ble_update_active())
     {
         bleBuffer = "";
         return;
