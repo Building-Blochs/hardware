@@ -71,3 +71,35 @@ The device echoes each processed token back over BLE TX. A simple Python smoke-t
 ## Known environment note
 
 MSYS2's `g++` requires `C:\msys64\ucrt64\bin` on PATH to spawn sub-processes (`cc1plus`, `collect2`). PlatformIO picks up the system PATH, so if you start PlatformIO from a shell where MSYS2 is not on PATH the native build will fail silently with exit code 1 and no error output.
+
+## Motor stutter timing capture
+
+Build and upload the diagnostic firmware, then capture USB serial at 115200 baud:
+
+```powershell
+pio device list
+pio device monitor --port COM5 --baud 115200 --filter log2file
+```
+
+Replace COM5 with the device port. The monitor saves a timestamped log in the
+current directory; stop with Ctrl+C. Close any other serial monitor first.
+
+Capture 20 seconds idle, 30 seconds of repeated ordinary moves with no touching,
+then the same moves while using the UI. Also capture 30 seconds of wander without
+and with UI activity. Note the approximate time of each phase and any visible
+stutter, plus the speed setting. Send the log and these notes for analysis.
+
+Every two seconds `[timing]` reports GUI/receiver maximum durations and motor-core
+service gaps in microseconds. `motor_samples=0` means no active-motion samples.
+`motor_over_budget` counts gaps above the 66 us maximum-speed budget (15000 steps/s);
+`motor_over_1ms` counts gaps above 1 ms. `motor_gap_max_us` is the longest gap.
+Idle sleeps are excluded. Motion transitions can still appear in these measurements.
+Counters are independent snapshots, so boundary events can fall in adjacent reports.
+
+These are scheduling diagnostics, not measured step pulses or proof of lost physical
+steps. Lower speeds have longer step periods, and instrumentation adds some overhead.
+Compare equivalent movements and speeds. Wander currently yields for one scheduler
+tick after steering updates; these pauses should be visible in the motor measurements.
+Do not remove that yield without providing another way to service the idle watchdog.
+If timing is clean but stutter remains, inspect step pulses with a logic analyzer
+and investigate the driver, power supply, and mechanical traction.

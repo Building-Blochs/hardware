@@ -28,24 +28,40 @@ static void bootExpired(void *) { ESP.restart(); }
 
 BlochSphere bloch;
 
+// Diagnostic service gaps, not physical step measurements. No serial I/O here.
+static constexpr uint32_t STEP_PERIOD_US = 1000000UL / MOTORS_MAX_SPEED;
+static std::atomic<uint32_t> motorGapMax{0}, motorOverBudget{0}, motorOver1ms{0};
+static std::atomic<uint32_t> motorSamples{0};
+
 static void stepper_task(void *)
 {
+    uint32_t previous = 0;
+    bool previousBusy = false;
     for (;;)
     {
+        const bool busy = bloch.isBusy();
+        const uint32_t now = micros();
+        // Exclude idle sleeps and the first call after idle.
+        if (busy && previousBusy) {
+            const uint32_t gap = now - previous;
+            motorSamples.fetch_add(1, std::memory_order_relaxed);
+            uint32_t peak = motorGapMax.load(std::memory_order_relaxed);
+            while (gap > peak && !motorGapMax.compare_exchange_weak(
+                peak, gap, std::memory_order_relaxed)) {}
+            if (gap > STEP_PERIOD_US) motorOverBudget.fetch_add(1, std::memory_order_relaxed);
+            if (gap > 1000) motorOver1ms.fetch_add(1, std::memory_order_relaxed);
+        }
+        previous = now;
+        previousBusy = busy;
         bloch.loop();
         stepperHeartbeat = millis();
-        if (!bloch.isBusy())
+        if (!bloch.isBusy()) {
+            previousBusy = false;
             vTaskDelay(1);  // feed watchdog when idle
+        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Loop timing: measures the gap between consecutive bloch.loop() calls and
-// the duration of each interleaved call.  At MOTORS_MAX_SPEED steps/sec the
-// stepper needs a call every (1e6 / MOTORS_MAX_SPEED) µs; gaps longer than
-// that will cause missed steps.
-// ---------------------------------------------------------------------------
-static constexpr uint32_t STEP_PERIOD_US = 1000000UL / MOTORS_MAX_SPEED;
 static constexpr uint32_t REPORT_MS      = 2000;
 
 struct LoopStats {
@@ -107,7 +123,7 @@ void loop()
         return;
     }
     // Timing stays here to measure how long GUI/receiver block core 1.
-    // The stepper itself is now immune to these delays (runs on core 0).
+    // Core separation alone does not guarantee motor deadlines.
     uint32_t t0 = micros();
     receiver_loop();
     uint32_t receiver_us = micros() - t0;
@@ -122,8 +138,11 @@ void loop()
     uint32_t now_ms = millis();
     if (now_ms - last_report_ms >= REPORT_MS) {
         last_report_ms = now_ms;
-        Serial.printf("[timing] gui_max=%uµs  receiver_max=%uµs  (stepper on core 0, unaffected)\n",
-                      stats.gui_max_us, stats.receiver_max_us);
+        // Independent snapshots can place boundary events in adjacent reports.
+        Serial.printf("[timing] ms=%lu gui_max_us=%u receiver_max_us=%u motor_samples=%u motor_gap_max_us=%u motor_over_budget=%u motor_over_1ms=%u budget_us=%u\n",
+                      (unsigned long)now_ms, stats.gui_max_us, stats.receiver_max_us,
+                      motorSamples.exchange(0), motorGapMax.exchange(0),
+                      motorOverBudget.exchange(0), motorOver1ms.exchange(0), STEP_PERIOD_US);
         stats = {};
     }
 }
