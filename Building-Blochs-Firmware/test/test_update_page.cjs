@@ -88,3 +88,13 @@ test('invalid schemes and credential-bearing URLs never reach the device',async(
     await app.$('wifiUpdate').onclick();assert(!app.packets.some(p=>p[0]===0x13));assert.match(app.$('status').textContent,/direct HTTP/);
   }
 });
+
+test('download diagnostics distinguish TLS, HTTP, and truncated-body failures',()=>{
+  const app=setup();
+  for(const [stage,http,tls,expected] of [[2,-1,-32512,/could not allocate memory for HTTPS/],[2,404,0,/file was not found/],[2,302,0,/link redirects/],[5,200,0,/connection closed early/],[4,200,0,/15-second timeout/]]){
+    const reply=new DataView(new ArrayBuffer(14));reply.setUint8(0,11);reply.setUint32(1,1024,true);reply.setUint8(5,stage);reply.setInt32(6,http,true);reply.setInt32(10,tls,true);
+    app.ctx.reply=reply;
+    const message=vm.runInContext('updateError(reply)',app.ctx);
+    assert.match(message,expected);assert(message.includes((1024).toLocaleString()+' bytes'));
+  }
+});

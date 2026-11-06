@@ -29,8 +29,16 @@ mbedtls_sha256_context sha;
 bool hashing = false;
 uint32_t read32(const uint8_t *p) { return p[0] | uint32_t(p[1])<<8 | uint32_t(p[2])<<16 | uint32_t(p[3])<<24; }
 void report(uint8_t code) {
-    uint8_t reply[5] = {code, uint8_t(offset), uint8_t(offset>>8), uint8_t(offset>>16), uint8_t(offset>>24)};
-    status->setValue(reply, sizeof(reply));
+    uint8_t reply[14] = {code, uint8_t(offset), uint8_t(offset>>8), uint8_t(offset>>16), uint8_t(offset>>24)};
+    if (code == 11) {
+        const auto error = wifi_update_error();
+        reply[5] = error.stage;
+        for (int i = 0; i < 4; ++i) {
+            reply[6+i] = uint32_t(error.http) >> (8*i);
+            reply[10+i] = uint32_t(error.tls) >> (8*i);
+        }
+    }
+    status->setValue(reply, code == 11 ? sizeof(reply) : 5);
 }
 void abortUpdate(uint8_t code) {
     memset(commandData, 0, sizeof(commandData));

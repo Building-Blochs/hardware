@@ -46,7 +46,25 @@ function controls(){
   $('saveWifi').disabled=busy||!writer||!wifiStatus;
   $('wifiUpdate').disabled=busy||!writer||!wifiStatus||!$('url').value;
 }
-const errors={3:'Device is busy, moving, calibrating, or checking its startup. Wait until it is idle.',4:'Update rejected: invalid signature, package, size, or checksum.',5:'Writing or activating the firmware failed.',6:'Invalid or unsupported command or URL.',7:'Update timed out.',10:'Device Wi-Fi is not connected. Save the network details and wait for connection.',11:'Download failed. Check the direct link, network, and server (redirects and logins are not supported).',12:'Could not save Wi-Fi details. Check the network name and password lengths.'};
+const errors={3:'Device is busy, moving, calibrating, or checking its startup. Wait until it is idle.',4:'Update rejected: invalid signature, package, size, or checksum.',5:'Writing or activating the firmware failed.',6:'Invalid or unsupported command or URL.',7:'Update timed out.',10:'Device Wi-Fi is not connected. Save the network details and wait for connection.',11:'Download failed.',12:'Could not save Wi-Fi details. Check the network name and password lengths.'};
+function updateError(reply){
+  const code=reply.getUint8(0);
+  if(code!==11)return errors[code];
+  const received=reply.getUint32(1,true);
+  let detail=`Download failed after ${received.toLocaleString()} bytes.`;
+  if(reply.byteLength<14)return detail+' This firmware does not report the underlying network error. Install the latest firmware over Bluetooth for detailed diagnostics.';
+  const stage=reply.getUint8(5),http=reply.getInt32(6,true),tls=reply.getInt32(10,true);
+  const stages={1:'opening the URL',2:'connecting to the server or reading its response',3:'reading the response body',4:'waiting for more download data (15-second timeout)',5:'reading the file (connection closed early)'};
+  detail+=` Failed while ${stages[stage]||'downloading'}.`;
+  if(http>=300)detail+=` Server returned HTTP ${http}.`;
+  else if(http<0)detail+=` HTTP client error ${http}.`;
+  if(tls)detail+=` TLS error ${tls} (-0x${Math.abs(tls).toString(16).toUpperCase()}).`;
+  if(tls===-32512)detail+=' The device could not allocate memory for HTTPS. Install the firmware with the TLS memory fix over Bluetooth.';
+  if(http>=300&&http<400)detail+=' Use the final download URL; this link redirects.';
+  else if(http===401||http===403)detail+=' The server denied access to the file.';
+  else if(http===404)detail+=' The file was not found.';
+  return detail;
+}
 const networkNames=['Wi-Fi not configured','Connecting to Wi-Fi…','Wi-Fi connected; internet check failed or pending','Internet available','Wi-Fi disconnected; retrying…'];
 async function refreshNetwork(){
   if(!wifiStatus)return;
@@ -59,7 +77,7 @@ async function exchange(packet,expectedCode,expectedOffset){
   while(Date.now()<deadline){
     const reply=await status.readValue();
     const code=reply.getUint8(0), offset=reply.getUint32(1,true);
-    if(errors[code]) throw Error(errors[code]);
+    if(errors[code]) throw Error(updateError(reply));
     if(packet[0]===0x13&&code===2)return; // a very small download may already be committed
     if(code===expectedCode&&(expectedOffset===undefined||offset===expectedOffset))return;
     if(cancelled&&packet[0]!==3)throw Error('Cancelled.');
@@ -149,7 +167,7 @@ $('wifiUpdate').onclick=async()=>{
     while(true){
       if(cancelled)throw Error('Cancelled.');
       const reply=await status.readValue(),code=reply.getUint8(0),offset=reply.getUint32(1,true);
-      if(errors[code])throw Error(errors[code]);
+      if(errors[code])throw Error(updateError(reply));
       if(code===2){finished=true;$('progress').value=100;message('Update installed. The device is restarting. Reconnect to check its firmware version.');break;}
       if(code===0)throw Error('The update was cancelled.');
       message(`Downloading over Wi-Fi: ${(offset/1048576).toFixed(2)} MB received. Keep the device powered.`);

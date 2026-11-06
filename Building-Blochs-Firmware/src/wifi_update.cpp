@@ -4,6 +4,9 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <atomic>
+#include <esp_heap_caps.h>
+#include <mbedtls/platform.h>
+#include "tls_allocator.h"
 
 namespace {
 struct Credentials { char ssid[33]; char password[64]; } credentials{};
@@ -11,6 +14,9 @@ struct Job { bool configure; char url[1025]; Credentials credentials; };
 QueueHandle_t jobs = nullptr, chunks = nullptr;
 std::atomic<bool> busy{false}, cancelled{false};
 std::atomic<uint8_t> state{0};
+// Published before the failure chunk; read only for a failed download.
+std::atomic<uint8_t> errorStage{0};
+std::atomic<int32_t> httpResult{0}, tlsResult{0};
 
 bool sendChunk(const WifiUpdateChunk &chunk) {
     while (!cancelled) {
@@ -29,9 +35,10 @@ public:
         while (!cancelled && millis() - started < 15000) {
             int available = client.available();
             if (available > 0) return client.read(data, std::min<size_t>(count, available));
-            if (!client.connected()) return 0;
+            if (!client.connected()) { errorStage = 5; return 0; }
             vTaskDelay(pdMS_TO_TICKS(10));
         }
+        errorStage = 4;
         return -1;
     }
     bool line(String &line) {
@@ -86,27 +93,42 @@ bool readBody(HTTPClient &http) {
     return false;
 }
 void download(const char *url) {
-    HTTPClient http;
     WiFiClient plain;
     WiFiClientSecure secure;
+    // HTTPClient retains the client pointer even after end() on some paths
+    // (e.g. a closed connection). Destroy it before either network client.
+    HTTPClient http;
     // Trust the signed BBU, independent of the download host's certificate/clock.
     // Never send Wi-Fi credentials to this endpoint.
     secure.setInsecure();
-    secure.setHandshakeTimeout(10);
-    http.setConnectTimeout(5000);
-    http.setTimeout(5000);
+    secure.setHandshakeTimeout(20);
+    http.setConnectTimeout(15000);
+    http.setTimeout(15000);
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     bool https = strncmp(url, "https://", 8) == 0;
+    errorStage = 1;
+    httpResult = 0;
+    tlsResult = 0;
     bool ok = WiFi.status() == WL_CONNECTED &&
         http.begin(https ? static_cast<WiFiClient &>(secure) : plain, url);
     const char *headers[] = {"Transfer-Encoding"};
     if (ok) {
         http.collectHeaders(headers, 1);
-        ok = http.GET() == HTTP_CODE_OK;
+        errorStage = 2;
+        httpResult = http.GET();
+        ok = httpResult == HTTP_CODE_OK;
     }
     if (ok && !cancelled) {
+        errorStage = 3;
         ok = readBody(http);
     }
+    if (!ok && https) {
+        char detail[128];
+        tlsResult = secure.lastError(detail, sizeof(detail));
+    }
+    if (!ok) Serial.printf("[wifi update] stage=%u HTTP=%ld TLS=%ld heap=%u largest=%u\n",
+        unsigned(errorStage.load()), long(httpResult.load()), long(tlsResult.load()),
+        ESP.getFreeHeap(), ESP.getMaxAllocHeap());
     http.end();
     WifiUpdateChunk end{};
     end.size = ok ? 0 : -1;
@@ -147,8 +169,9 @@ void worker(void *) {
         }
         if (state != 3) state = 2;
         if (millis() - lastProbe >= 30000 && !busy) {
-            HTTPClient probe;
             WiFiClient client;
+            // Reverse destruction order: the borrowed client must outlive probe.
+            HTTPClient probe;
             probe.setConnectTimeout(3000);
             probe.setTimeout(3000);
             bool online = probe.begin(client, "http://connectivitycheck.gstatic.com/generate_204") && probe.GET() == 204;
@@ -160,6 +183,7 @@ void worker(void *) {
 }
 }
 void wifi_update_setup() {
+    mbedtls_platform_set_calloc_free(tlsCalloc, heap_caps_free);
     Preferences prefs;
     if (prefs.begin("wifi", true)) {
         if (prefs.getBytesLength("credentials") == sizeof(credentials))
@@ -177,6 +201,7 @@ void wifi_update_setup() {
 }
 bool wifi_update_busy() { return busy.load(); }
 uint8_t wifi_update_state() { return state.load(); }
+WifiUpdateError wifi_update_error() { return {errorStage.load(), httpResult.load(), tlsResult.load()}; }
 bool wifi_update_configure(const uint8_t *data, size_t size) {
     if (busy || size < 2 || data[0] < 1 || data[0] > 32 || size < size_t(1 + data[0])) return false;
     size_t passwordSize = size - 1 - data[0];

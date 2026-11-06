@@ -169,3 +169,29 @@ Host-side updater checks: `node --test test/test_update_page.cjs` and
 `python -m unittest discover -s test -p test_update_package.py`.
 
 These physical checks cannot be replaced by a successful compilation.
+
+### Download failure diagnostics
+
+Download-error status (code 11) now has 14 bytes. The original code and received
+byte count remain at offsets 0–4. Byte 5 identifies the failure stage: 1 URL setup,
+2 connection/HTTP response, 3 response body/framing, 4 body idle timeout, or
+5 premature connection close. Bytes 6–9 are the signed little-endian HTTP result
+(positive server status or negative Arduino HTTPClient error), and bytes 10–13
+are the signed little-endian TLS error, or zero. Older clients can still read the
+first five bytes; the updated page explains the extended errors. Serial output
+also includes available heap and largest allocation, without logging the URL or
+credentials. TCP/header timeouts are 15 seconds and TLS handshake timeout is
+20 seconds. The body idle timeout remains 15 seconds.
+
+### HTTPS memory allocation
+
+TLS error `-32512` (`-0x7F00`, `MBEDTLS_ERR_SSL_ALLOC_FAILED`) means the
+HTTPS library could not allocate memory. The bundled ESP32 framework defaults to
+internal-only mbedTLS allocations. With Bluetooth, Wi-Fi, and the display active,
+there may not be a sufficiently large free internal block for TLS buffers.
+At startup, before creating network tasks, firmware installs a permanent mbedTLS
+allocator that prefers byte-addressable PSRAM and falls back to internal RAM.
+Both paths use zero-initialized allocation and the matching ESP heap deallocator.
+The board, partition table, and signature verification requirements are unchanged.
+Install `release/wifi-update-tls-memory-fix.bbu` over Bluetooth (or USB) once;
+then retry the HTTPS download. The updater page now explains this error directly.
