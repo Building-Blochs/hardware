@@ -52,6 +52,8 @@ static lv_obj_t *ble_overlay;
 static lv_obj_t *ble_label;
 static lv_obj_t *internet_icon;
 static lv_obj_t *update_overlay;
+static lv_obj_t *update_status_label;
+static lv_obj_t *update_progress_bar;
 
 static bool ble_is_connected = false;
 static unsigned long ble_disconnect_time = 0;
@@ -265,11 +267,29 @@ void gui_begin()
     lv_obj_center(update_overlay);
     lv_obj_set_style_bg_color(update_overlay, lv_color_hex(0x102030), 0);
     lv_obj_set_style_bg_opa(update_overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(update_overlay, 0, 0);
+    lv_obj_set_style_border_width(update_overlay, 0, 0);
+    lv_obj_set_style_pad_all(update_overlay, 0, 0);
+    lv_obj_clear_flag(update_overlay, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_flag(update_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t *update_label = lv_label_create(update_overlay);
-    lv_label_set_text(update_label, "UPDATING\nKeep power on");
+    lv_label_set_text(update_label, "Updating firmware");
+    lv_obj_set_style_text_font(update_label, &lv_font_montserrat_26, 0);
     lv_obj_set_style_text_color(update_label, lv_color_white(), 0);
-    lv_obj_center(update_label);
+    lv_obj_align(update_label, LV_ALIGN_CENTER, 0, -60);
+    update_status_label = lv_label_create(update_overlay);
+    lv_obj_set_style_text_color(update_status_label, lv_color_white(), 0);
+    lv_label_set_text(update_status_label, "Preparing update...");
+    lv_obj_align(update_status_label, LV_ALIGN_CENTER, 0, -14);
+    update_progress_bar = lv_bar_create(update_overlay);
+    lv_obj_set_size(update_progress_bar, DISPLAY_WIDTH - 64, 12);
+    lv_obj_align(update_progress_bar, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_style_bg_color(update_progress_bar, lv_color_hex(0x3A5F5F), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(update_progress_bar, lv_color_hex(0x58A4B0), LV_PART_INDICATOR);
+    lv_obj_t *power_label = lv_label_create(update_overlay);
+    lv_label_set_text(power_label, "Keep power on");
+    lv_obj_set_style_text_color(power_label, lv_color_white(), 0);
+    lv_obj_align(power_label, LV_ALIGN_CENTER, 0, 60);
     internet_icon = lv_label_create(lv_layer_sys());
     lv_obj_align(internet_icon, LV_ALIGN_TOP_RIGHT, -5, 3);
     lv_obj_set_style_bg_color(internet_icon, lv_color_hex(0x102030), 0);
@@ -292,9 +312,19 @@ void gui_loop()
     static bool inputsSuspended = false;
     if (inputsSuspended != updating) {
         lv_indev_enable(nullptr, !updating);
+        lv_disp_trig_activity(NULL);
+        if (updating) lv_obj_move_foreground(update_overlay);
         inputsSuspended = updating;
     }
-    if (updating) lv_obj_clear_flag(update_overlay, LV_OBJ_FLAG_HIDDEN);
+    if (updating) {
+        lv_obj_clear_flag(update_overlay, LV_OBJ_FLAG_HIDDEN);
+        const int progress = ble_update_progress();
+        if (ble_update_restarting()) lv_label_set_text(update_status_label, "Complete! Restarting...");
+        else if (progress < 0) lv_label_set_text(update_status_label, "Preparing update...");
+        else if (progress == 100) lv_label_set_text(update_status_label, "Verifying update...");
+        else lv_label_set_text_fmt(update_status_label, "%d%%", progress);
+        lv_bar_set_value(update_progress_bar, progress < 0 ? 0 : progress, LV_ANIM_OFF);
+    }
     else lv_obj_add_flag(update_overlay, LV_OBJ_FLAG_HIDDEN);
     static int previousInternet = -1;
     int internet = wifi_update_state();
@@ -860,7 +890,7 @@ void gui_settings_changed()
 static void update_screen_dim()
 {
     const uint32_t timeout_ms = settings.dim_minutes * 60000UL;
-    const bool dim = timeout_ms > 0 && lv_disp_get_inactive_time(NULL) > timeout_ms && !bloch.isBusy();
+    const bool dim = !ble_update_active() && timeout_ms > 0 && lv_disp_get_inactive_time(NULL) > timeout_ms && !bloch.isBusy();
     if (dim == screen_dimmed)
     {
         return;

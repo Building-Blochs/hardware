@@ -118,6 +118,11 @@ class Writes : public BLECharacteristicCallbacks {
 };
 }
 bool ble_update_active() { return active.load(); }
+int ble_update_progress() {
+    if (!imageSize || offset < sizeof(header)) return -1;
+    return int(uint64_t(offset - sizeof(header)) * 100 / imageSize);
+}
+bool ble_update_restarting() { return rebootAt != 0; }
 void ble_update_disconnect() { disconnected = true; }
 void ble_update_setup(BLEServer *server) {
     queue = xQueueCreate(4, sizeof(Packet));
