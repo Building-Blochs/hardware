@@ -90,3 +90,11 @@ Example:
 - Keep command names and arguments in the documented order; commands are case-sensitive.
 - BLE commands are ignored while the device is performing calibration.
 - The device echoes command tokens, including unrecognized tokens; an echo is not confirmation that a command was valid.
+## Wi-Fi provisioning and firmware download
+
+Wi-Fi setup and OTA commands use the separate binary update service, rather than
+comma-separated UART commands (which echo their input). Use `update.html` to save
+a network name/password on the device and request a signed `.bbu` download from a
+direct HTTP(S) link. See [UPDATING.md](UPDATING.md#ble-protocol) for UUIDs, fragmented
+command encoding, acknowledgements, and Wi-Fi status codes. Credentials are not
+echoed. Saved Wi-Fi details survive firmware updates and device restarts.

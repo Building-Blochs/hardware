@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "ble_update.h"
+#include "wifi_update.h"
 #include <esp_ota_ops.h>
 #include <esp_timer.h>
 #include <atomic>
@@ -72,6 +73,7 @@ void setup()
             esp_ota_mark_app_invalid_rollback_and_reboot();
     }
     settings_load();
+    wifi_update_setup();
     receiver_setup();
     gui_begin();
     motorReady = bloch.begin();
@@ -100,6 +102,7 @@ void loop()
     ble_update_loop();
     if (ble_update_active()) {
         receiver_loop(); // discard any queued commands; keep UI/motion controls suspended
+        gui_loop(); // the update overlay blocks touch controls while status stays live
         delay(1);
         return;
     }

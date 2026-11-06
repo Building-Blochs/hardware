@@ -1,4 +1,6 @@
 #include "gui.h"
+#include "ble_update.h"
+#include "wifi_update.h"
 #include "bloch.h"
 #include "calibration.h"
 #include "config.h" // For DISPLAY_WIDTH, DISPLAY_HEIGHT
@@ -48,6 +50,8 @@ static lv_style_t style_state_label;
 
 static lv_obj_t *ble_overlay;
 static lv_obj_t *ble_label;
+static lv_obj_t *internet_icon;
+static lv_obj_t *update_overlay;
 
 static bool ble_is_connected = false;
 static unsigned long ble_disconnect_time = 0;
@@ -256,6 +260,23 @@ void gui_begin()
 
     create_settings_panel();
     calibration_create();
+    update_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(update_overlay, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    lv_obj_center(update_overlay);
+    lv_obj_set_style_bg_color(update_overlay, lv_color_hex(0x102030), 0);
+    lv_obj_set_style_bg_opa(update_overlay, LV_OPA_COVER, 0);
+    lv_obj_add_flag(update_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *update_label = lv_label_create(update_overlay);
+    lv_label_set_text(update_label, "UPDATING\nKeep power on");
+    lv_obj_set_style_text_color(update_label, lv_color_white(), 0);
+    lv_obj_center(update_label);
+    internet_icon = lv_label_create(lv_layer_sys());
+    lv_obj_align(internet_icon, LV_ALIGN_TOP_RIGHT, -5, 3);
+    lv_obj_set_style_bg_color(internet_icon, lv_color_hex(0x102030), 0);
+    lv_obj_set_style_bg_opa(internet_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(internet_icon, 2, 0);
+    lv_obj_set_style_text_font(internet_icon, &lv_font_montserrat_14, 0);
+    lv_label_set_text(internet_icon, LV_SYMBOL_WIFI " " LV_SYMBOL_CLOSE);
     apply_settings();
 
     // load screen
@@ -267,6 +288,21 @@ void gui_begin()
 void gui_loop()
 {
     time_t now = millis();
+    bool updating = ble_update_active();
+    static bool inputsSuspended = false;
+    if (inputsSuspended != updating) {
+        lv_indev_enable(nullptr, !updating);
+        inputsSuspended = updating;
+    }
+    if (updating) lv_obj_clear_flag(update_overlay, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(update_overlay, LV_OBJ_FLAG_HIDDEN);
+    static int previousInternet = -1;
+    int internet = wifi_update_state();
+    if (internet != previousInternet) {
+        lv_label_set_text(internet_icon, internet == 3 ? LV_SYMBOL_WIFI " " LV_SYMBOL_OK : LV_SYMBOL_WIFI " " LV_SYMBOL_CLOSE);
+        lv_obj_set_style_text_color(internet_icon, lv_color_hex(internet == 3 ? 0x66EE99 : 0xFFCC66), 0);
+        previousInternet = internet;
+    }
 
     static time_t prv_state_tick = 0;
     if (now - prv_state_tick > 120)
@@ -285,6 +321,7 @@ void gui_loop()
     }
 
     update_screen_dim();
+    if (updating) return;
     calibration_loop();
 
     if (defaults_armed && now - defaults_armed_time > kDefaultsConfirmMs)
