@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Update your Bloch</title>
+<style>
+body{font:17px system-ui,sans-serif;background:#f1f5f9;color:#152238;max-width:640px;margin:8vh auto;padding:24px}main{background:white;padding:32px;border-radius:18px;box-shadow:0 8px 32px #15223812}h1{margin-top:0}button,input{font:inherit;margin:10px 0}button{padding:12px 20px;border:0;border-radius:8px;background:#185abd;color:white;cursor:pointer}button:disabled{opacity:.45;cursor:default}progress{width:100%;height:24px}#status{white-space:pre-wrap;line-height:1.5}small{display:block;color:#526277;line-height:1.6}
+</style>
+<main>
+<h1>Update your Bloch</h1>
+<p>Connect a nearby device, then select a signed firmware update.</p>
+<button id="connect">Connect device</button>
+<p id="device">No device connected</p>
+<section aria-labelledby="wifiHeading">
+<h2 id="wifiHeading">Fast update over Wi-Fi</h2>
+<p id="network" role="status">Connect to check device Wi-Fi.</p>
+<label>Wi-Fi network (2.4 GHz)<br><input id="ssid" autocomplete="off" maxlength="32"></label><br>
+<label>Wi-Fi password<br><input id="password" type="password" autocomplete="new-password" maxlength="63"></label><br>
+<button id="saveWifi" disabled>Save and connect Wi-Fi</button>
+<small>Saved on the device for automatic reconnection. Leave the password empty for an open network.</small>
+<label>Direct link to signed update (.bbu)<br><input id="url" type="url" placeholder="https://example.com/update.bbu" style="width:100%;box-sizing:border-box"></label>
+<button id="wifiUpdate" disabled>Install over Wi-Fi</button>
+<small>The device downloads the file directly. Use a link that returns the file without a login or redirect. Wi-Fi installation continues if Bluetooth disconnects.</small>
+</section>
+<h2>Update over Bluetooth</h2>
+<label>Signed update (.bbu)<br><input id="file" type="file" accept=".bbu"></label>
+<p id="package"></p>
+<label><input id="compat" type="checkbox"> Slower compatibility mode (use if transfer fails)</label>
+<button id="update" disabled>Install update</button>
+<button id="cancel" disabled>Cancel</button>
+<progress id="progress" max="100" value="0"></progress>
+<p id="status" role="status" aria-live="polite">Keep the device powered and this page open during the update.</p>
+<small>Use Chrome or Edge on a Bluetooth-enabled PC. The device must be idle. After installation it restarts and performs its normal startup movement; keep the sphere clear. USB installation is required once to enable wireless updates.</small>
+</main>
+<script type="module">
+const serviceId='a0741000-7d16-4a22-b123-97fe36c04200';
+const uuid=n=>`a074100${n}-7d16-4a22-b123-97fe36c04200`;
+const $=id=>document.getElementById(id);
+const message=text=>$('status').textContent=text;
+let device,writer,status,wifiStatus,bytes,busy=false,cancelled=false,finished=false,wifiInstalling=false;
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function controls(){
+  $('connect').disabled=busy; $('file').disabled=busy; $('compat').disabled=busy;
+  $('update').disabled=busy||!writer||!bytes; $('cancel').disabled=!busy||finished;
+  for(const id of ['ssid','password','url']) $(id).disabled=busy;
+  $('saveWifi').disabled=busy||!writer||!wifiStatus;
+  $('wifiUpdate').disabled=busy||!writer||!wifiStatus||!$('url').value;
+}
+const errors={3:'Device is busy, moving, calibrating, or checking its startup. Wait until it is idle.',4:'Update rejected: invalid signature, package, size, or checksum.',5:'Writing or activating the firmware failed.',6:'Invalid or unsupported command or URL.',7:'Update timed out.',10:'Device Wi-Fi is not connected. Save the network details and wait for connection.',11:'Download failed.',12:'Could not save Wi-Fi details. Check the network name and password lengths.'};
+function updateError(reply){
+  const code=reply.getUint8(0);
+  if(code!==11)return errors[code];
+  const received=reply.getUint32(1,true);
+  let detail=`Download failed after ${received.toLocaleString()} bytes.`;
+  if(reply.byteLength<14)return detail+' This firmware does not report the underlying network error. Install the latest firmware over Bluetooth for detailed diagnostics.';
+  const stage=reply.getUint8(5),http=reply.getInt32(6,true),tls=reply.getInt32(10,true);
+  const stages={1:'opening the URL',2:'connecting to the server or reading its response',3:'reading the response body',4:'waiting for more download data (15-second timeout)',5:'reading the file (connection closed early)'};
+  detail+=` Failed while ${stages[stage]||'downloading'}.`;
+  if(http>=300)detail+=` Server returned HTTP ${http}.`;
+  else if(http<0)detail+=` HTTP client error ${http}.`;
+  if(tls)detail+=` TLS error ${tls} (-0x${Math.abs(tls).toString(16).toUpperCase()}).`;
+  if(tls===-32512)detail+=' The device could not allocate memory for HTTPS. Install the firmware with the TLS memory fix over Bluetooth.';
+  if(http>=300&&http<400)detail+=' Use the final download URL; this link redirects.';
+  else if(http===401||http===403)detail+=' The server denied access to the file.';
+  else if(http===404)detail+=' The file was not found.';
+  return detail;
+}
+const networkNames=['Wi-Fi not configured','Connecting to Wi-Fi…','Wi-Fi connected; internet check failed or pending','Internet available','Wi-Fi disconnected; retrying…'];
+async function refreshNetwork(){
+  if(!wifiStatus)return;
+  const value=await wifiStatus.readValue();
+  $('network').textContent=networkNames[value.getUint8(0)]||'Unknown Wi-Fi state';
+}
+async function exchange(packet,expectedCode,expectedOffset){
+  await writer.writeValueWithResponse(packet);
+  const deadline=Date.now()+30000;
+  while(Date.now()<deadline){
+    const reply=await status.readValue();
+    const code=reply.getUint8(0), offset=reply.getUint32(1,true);
+    if(errors[code]) throw Error(updateError(reply));
+    if(packet[0]===0x13&&code===2)return; // a very small download may already be committed
+    if(code===expectedCode&&(expectedOffset===undefined||offset===expectedOffset))return;
+    if(cancelled&&packet[0]!==3)throw Error('Cancelled.');
+    await sleep(20);
+  }
+  throw Error('Device did not acknowledge the update. Reconnect and try again.');
+}
+$('connect').onclick=async()=>{
+  try{
+    if(!navigator.bluetooth)throw Error('Web Bluetooth is unavailable. Open this HTTPS page in Chrome or Edge.');
+    if(device?.gatt.connected)device.gatt.disconnect();
+    device=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'Bloch-'}],optionalServices:[serviceId]});
+    device.addEventListener('gattserverdisconnected',()=>{
+      writer=null; wifiStatus=null; controls();
+      $('device').textContent='Disconnected';
+      if(!finished)message(wifiInstalling?'Bluetooth disconnected. The Wi-Fi update continues on the device. Reconnect to check its version.':'Device disconnected. If a Bluetooth transfer was interrupted, reconnect and start again.');
+    });
+    const server=await device.gatt.connect();
+    const service=await server.getPrimaryService(serviceId);
+    writer=await service.getCharacteristic(uuid(1));
+    status=await service.getCharacteristic(uuid(2));
+    wifiStatus=null;
+    try{wifiStatus=await service.getCharacteristic(uuid(4));await refreshNetwork();}
+    catch{$('network').textContent='Install firmware with Wi-Fi support over Bluetooth or USB first.';}
+    const info=await (await service.getCharacteristic(uuid(3))).readValue();
+    $('device').textContent=`${device.name} — ${new TextDecoder().decode(info)}`;
+    finished=false;
+    message('Connected. Select a signed update to continue.');
+  }catch(error){writer=null;wifiStatus=null;message(error.message+' If the update service is missing, install the initial firmware by USB.');}
+  controls();
+};
+$('file').onchange=async()=>{
+  bytes=null; controls();
+  try{
+    const file=$('file').files[0];
+    if(!file)return;
+    if(file.size>0x640000+300||file.size<=300)throw Error('Invalid update size.');
+    const candidate=new Uint8Array(await file.arrayBuffer());
+    if(new TextDecoder().decode(candidate.slice(0,8))!=='BBOTA001'||new DataView(candidate.buffer).getUint32(8,true)!==candidate.length-300)throw Error('Not a supported Bloch update package.');
+    const hash=new Uint8Array(await crypto.subtle.digest('SHA-256',candidate.slice(300)));
+    if(!hash.every((v,i)=>v===candidate[12+i]))throw Error('Package is corrupted. Download it again.');
+    bytes=candidate;
+    $('package').textContent=`${file.name} — ${((bytes.length-300)/1048576).toFixed(2)} MB. The device verifies the publisher signature before writing.`;
+  }catch(error){message(error.message);}
+  controls();
+};
+$('cancel').onclick=()=>{cancelled=true;message('Cancelling…');};
+$('url').oninput=controls;
+// Fragment credentials and URLs so even the minimum Bluetooth MTU works.
+async function stage(payload){
+  if(payload.length>1024)throw Error('The link is too long (maximum 1024 UTF-8 bytes).');
+  await exchange(new Uint8Array([0x10]),8,0);
+  for(let offset=0;offset<payload.length;){
+    if(cancelled)throw Error('Cancelled.');
+    const count=Math.min(17,payload.length-offset);
+    const packet=new Uint8Array(3+count);packet[0]=0x11;
+    new DataView(packet.buffer).setUint16(1,offset,true);
+    packet.set(payload.subarray(offset,offset+count),3);
+    await exchange(packet,8,offset+count);
+    offset+=count;
+  }
+}
+$('saveWifi').onclick=async()=>{
+  busy=true;cancelled=false;finished=false;controls();
+  try{
+    const encoder=new TextEncoder(),ssid=encoder.encode($('ssid').value),password=encoder.encode($('password').value);
+    if(!ssid.length||ssid.length>32||ssid.includes(0))throw Error('Network name must be 1–32 UTF-8 bytes.');
+    if(password.includes(0)||password.length>63||(password.length>0&&password.length<8))throw Error('Password must be 8–63 UTF-8 bytes, or empty for an open network.');
+    const payload=new Uint8Array(1+ssid.length+password.length);
+    payload[0]=ssid.length;payload.set(ssid,1);payload.set(password,1+ssid.length);
+    try{await stage(payload);await exchange(new Uint8Array([0x12]),9);}
+    finally{payload.fill(0);password.fill(0);$('password').value='';}
+    message('Wi-Fi details saved. The device is connecting and will reconnect automatically after restart.');
+    await refreshNetwork();
+  }catch(error){message(error.message);}
+  finally{busy=false;controls();}
+};
+$('wifiUpdate').onclick=async()=>{
+  busy=true;cancelled=false;finished=false;wifiInstalling=true;controls();
+  try{
+    const link=$('url').value.trim(),url=new URL(link);
+    if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.hash)throw Error('Use a direct HTTP or HTTPS file link without login details or a fragment.');
+    await stage(new TextEncoder().encode(url.href));
+    await exchange(new Uint8Array([0x13]),1);
+    $('progress').removeAttribute('value');
+    message('Downloading over Wi-Fi… Keep the device powered.');
+    while(true){
+      if(cancelled)throw Error('Cancelled.');
+      const reply=await status.readValue(),code=reply.getUint8(0),offset=reply.getUint32(1,true);
+      if(errors[code])throw Error(updateError(reply));
+      if(code===2){finished=true;$('progress').value=100;message('Update installed. The device is restarting. Reconnect to check its firmware version.');break;}
+      if(code===0)throw Error('The update was cancelled.');
+      message(`Downloading over Wi-Fi: ${(offset/1048576).toFixed(2)} MB received. Keep the device powered.`);
+      await sleep(500);
+    }
+  }catch(error){
+    if(device?.gatt.connected){
+      try{await exchange(new Uint8Array([3]),0);}catch{}
+      message(error.message+' Reconnect to check the firmware version before retrying.');
+    }else message('Bluetooth disconnected. The Wi-Fi update may still be running. Keep power on and reconnect to check the firmware version.');
+  }finally{busy=false;wifiInstalling=false;if(!finished)$('progress').value=0;controls();}
+};
+setInterval(()=>{if(!busy&&writer)refreshNetwork().catch(()=>{});},3000);
+$('update').onclick=async()=>{
+  busy=true; cancelled=false; finished=false; controls();
+  try{
+    await exchange(new Uint8Array([1]),1,0);
+    // Compatibility mode fits the minimum ATT MTU. Each packet has a five-byte header.
+    for(let offset=0;offset<bytes.length;){
+      if(cancelled)throw Error('Cancelled.');
+      const boundary=offset<300?300:bytes.length;
+      const count=Math.min($('compat').checked?15:180,boundary-offset);
+      const packet=new Uint8Array(5+count);packet[0]=2;
+      new DataView(packet.buffer).setUint32(1,offset,true);
+      packet.set(bytes.subarray(offset,offset+count),5);
+      await exchange(packet,1,offset+count);
+      offset+=count;
+      const percent=Math.floor(offset/bytes.length*100);
+      $('progress').value=percent;
+      message(`Transferring: ${percent}%. Keep this page open and the device powered. Bluetooth transfer can take several minutes.`);
+    }
+    message('Verifying and activating update…');
+    await exchange(new Uint8Array([4]),2);
+    finished=true;
+    message('Update installed. The device is restarting. Reconnect to check its firmware version.');
+  }catch(error){
+    if(device?.gatt.connected){try{await exchange(new Uint8Array([3]),0);}catch{}}
+    message(error.message+' The update was not confirmed. Reconnect to check the device version before retrying.');
+  }finally{busy=false;controls();}
+};
+controls();
+</script>
+</html>

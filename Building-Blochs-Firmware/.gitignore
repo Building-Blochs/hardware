@@ -3,3 +3,10 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+.env
+include/version.h
+
+.update-keys/
+release/
+ota-build.log
+__pycache__/
